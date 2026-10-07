@@ -28,6 +28,7 @@ if step == 'error': print('ERROR: something else broke'); sys.exit(1)
 if step == 'finish': Path('notes.txt').write_text('finished\n'); baton('done', 'finished the task'); sys.exit(0)
 if step == 'ask': baton('ask-user', 'needs a decision'); sys.exit(0)
 if step == 'continue': baton('continue', 'one step'); sys.exit(0)
+if step == 'make0-words': baton('continue', 'reviewed, no calls', 'Calls used: 0 live model calls\n'); sys.exit(0)
 if step.startswith('make'):
     sys.path.insert(0, os.environ['RELAY_REPO'] + '/budget'); from relay_budget import reserve_relay_call
     used = 0

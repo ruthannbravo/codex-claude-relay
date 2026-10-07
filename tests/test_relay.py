@@ -112,6 +112,12 @@ class Relay(unittest.TestCase):
         self.configure()
         self.assertNotEqual(self.relay([], 'run', '--task', 'Tune', '--check', '1', '--calls', '2', '--maker', 'codex', '--dry-run'), 0)
 
+    def test_a_call_count_with_words_after_it_is_accepted(self):
+        # Codex wrote "Calls used: 0 live model calls" in a real run; the number is what counts.
+        self.configure()
+        self.assertEqual(self.relay(['make0-words', 'verdict-approve'], 'run', '--task', 'Review', '--check', '1'), 0)
+        self.assertIn('approved by codex', self.output)
+
     # Take turns
     def test_take_turns_alternates_and_stops_at_the_limit(self):
         self.assertEqual(self.relay(['continue'] * 3, 'run', '--task', 'Build', '--take-turns', '3'), 0)

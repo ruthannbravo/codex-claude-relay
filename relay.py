@@ -348,7 +348,7 @@ def run_check(task, rounds, budget, maker, dry_run):
         baton = read_baton()
         if not baton or baton['text'] == before: return stop(f'round {rnd}: {maker} finished without updating the baton', ok=False)
         if git('branch', '--show-current') != branch: return stop(f'round {rnd}: {maker} changed branch', ok=False)
-        reported = re.search(r'^Calls used: *(\d+) *$', baton['text'], re.M)
+        reported = re.search(r'^Calls used:\s*(\d+)\b', baton['text'], re.M)
         if not reported: return stop(f'round {rnd}: {maker} did not report Calls used', ok=False)
         measured = budget_used(ledger)
         if int(reported[1]) != measured - used: return stop(f'round {rnd}: reported calls ({reported[1]}) disagree with the ledger ({measured - used})', ok=False)
