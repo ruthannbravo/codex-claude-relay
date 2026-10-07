@@ -135,6 +135,42 @@ class Relay(unittest.TestCase):
         self.assertEqual(self.sessions(), 0)
         self.assertFalse((self.work/'.relay/log.md').exists())
 
+    # Keeping context
+    def test_init_creates_the_context_files_and_never_overwrites(self):
+        (self.work/'CLAUDE.md').write_text('My own Claude notes.\n')
+        self.assertEqual(self.relay([], 'init'), 0)
+        self.assertIn('## Rules', (self.work/'AGENTS.md').read_text())
+        self.assertEqual((self.work/'CLAUDE.md').read_text(), 'My own Claude notes.\n')
+        self.assertIn('tip', self.output)
+        self.assertEqual(json.loads((self.work/'relay.json').read_text())['checkpoint'], 'docs/progress.md')
+        self.assertIn('.relay/transcripts/', (self.work/'.gitignore').read_text())
+        (self.work/'AGENTS.md').write_text('mine\n'); self.relay([], 'init')
+        self.assertEqual((self.work/'AGENTS.md').read_text(), 'mine\n')
+        self.assertEqual((self.work/'.gitignore').read_text().count('.relay/transcripts/'), 1)
+
+    def test_assistants_are_told_to_carry_decisions_forward(self):
+        self.relay(['finish'], 'run', '--task', 'Tidy')
+        self.assertIn("## Tried, didn't work", self.prompt(0))
+        self.assertIn('never\ndrop it', self.prompt(0))
+
+    def test_a_hand_over_keeps_decisions_already_in_the_note(self):
+        self.relay([], 'pass', '--to', 'codex', '--task', 'Tidy', '--note', 'Started')
+        baton = self.work/'.relay/baton.md'
+        baton.write_text(baton.read_text().replace('None yet.', 'Kept British spelling because the client is in London.'))
+        # Codex picks the note up, runs out before touching it; then Claude runs out too.
+        self.assertEqual(self.relay(['out', 'out'], 'run'), 1)
+        self.assertIn('Kept British spelling', baton.read_text())
+        self.assertIn('## Relay note', baton.read_text())
+
+    def test_pass_adds_to_the_note_instead_of_replacing_it(self):
+        self.relay([], 'pass', '--to', 'codex', '--task', 'Tidy', '--note', 'First note')
+        self.relay([], 'pass', '--to', 'claude', '--note', 'Sam says: use the short version', '--status', 'continue')
+        note = (self.work/'.relay/baton.md').read_text()
+        self.assertIn('First note', note)
+        self.assertIn('Sam says: use the short version', note)
+        self.assertIn('To: claude', note)
+
+
 class Budget(unittest.TestCase):
     def test_python_and_node_helpers_share_one_ledger(self):
         sys.path.insert(0, str(REPO/'budget')); from relay_budget import reserve_relay_call

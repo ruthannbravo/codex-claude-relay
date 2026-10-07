@@ -12,16 +12,40 @@ A small Python script that lets two AI coding assistants, OpenAI's **Codex** and
 | **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round Claude does the work and may run live tests within the call budget. Codex then reviews it read-only and ends with approve, revise or ask-user. "Revise" goes back to Claude with the review. | Approved · needs you · round limit (1–5) · call budget exceeded or misreported · any error |
 | **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · needs you · turn limit (1–8) · any error |
 
-Plus `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
+Plus `relay.py init` to set up a project, `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
 
 ![Make and check](docs/images/make-and-check.png)
+
+## How it keeps context
+
+Codex and Claude each start every session with a blank memory. Neither can see the other's conversation. So the relay never relies on memory: everything that matters is written into files that both of them read first. Think of a shift change at a hospital. The next nurse doesn't remember the last shift, but the patient's chart says everything.
+
+![How the relay keeps context](docs/images/context.png)
+
+| Layer | File | What it holds | Changes |
+| --- | --- | --- | --- |
+| **Rulebook** | `AGENTS.md` (Codex reads it automatically) plus a one-line `CLAUDE.md` pointing to it | What the project is, how to test it, rules, your preferences | Rarely |
+| **Task note** | `.relay/baton.md` | What I did · What's next · Watch out for · **Decisions and why** · **Tried, didn't work** | After every step |
+| **Diary** | your progress file plus Git commit messages | Where things stand across days, and why each change was made | Every session |
+| **Your answers** | added to the task note with `relay.py pass --note "..."` | Decisions only you can make | When asked |
+
+Rules that keep it from leaking:
+
+- **Write as you go.** Assistants update the note after every meaningful step, not just at the end, so running out of usage loses at most one step.
+- **Only add, never wipe.** "Decisions and why" and "Tried, didn't work" are copied forward every time. Hand-overs and `pass` add to the existing note instead of replacing it, and if an assistant stops without writing anything, the relay keeps the old note and adds what it can see (the limit message and any half-finished files).
+- **One rulebook for both.** Put shared instructions in `AGENTS.md`. Codex reads it automatically, and a one-line `CLAUDE.md` sends Claude there, so the two never follow different rules.
+- **A second pair of eyes.** In make and check, the reviewer judges the work against your own files (`review_criteria`), which catches drift from what you asked.
+
+`relay.py init` sets all of this up in a new project: a starter `AGENTS.md` to fill in, the `CLAUDE.md` pointer, a progress file, `relay.json` and the `.gitignore` entry. It never overwrites a file you already have.
+
+What doesn't carry over: anything that was said but never written down. If it matters, put it in `AGENTS.md` or the note.
 
 ## How it works
 
 ![Under the hood](docs/images/architecture.png)
 
 - **One editor at a time.** Every session claims a lock in the Git directory (`.git/relay-writer-lock`). If anyone else holds it, the relay refuses to start.
-- **The hand-off note.** `.relay/baton.md` says what was done, what's next and what to watch out for. Its `Status:` line (`continue`, `done` or `ask-user`) decides whether the relay continues.
+- **The hand-off note.** `.relay/baton.md` says what was done, what's next, what to watch out for, which decisions were made and why, and what was tried and didn't work. Its `Status:` line (`continue`, `done` or `ask-user`) decides whether the relay continues.
 - **The call ledger.** Every session gets a `RELAY_CALL_BUDGET` directory. Your test runner calls `reserveRelayCall()` (Node) or `reserve_relay_call()` (Python) from [`budget/`](budget/) before each live model call. Each call takes one slot with an atomic `mkdir`, so repeated and parallel runs share one cap. Outside make and check the budget is zero. In make and check the relay also checks the maker's reported `Calls used:` against the ledger and stops if they disagree.
 - **Usage-limit detection.** When a session ends, the relay looks for a usage-limit message in its last few lines only, so text the assistant read earlier can't trigger a switch.
 - **Receipts.** The terminal shows one line per step. Everything each assistant printed goes to `.relay/transcripts/`, `.relay/log.md` keeps a one-line history, and each make-and-check review is committed on its own.
@@ -34,6 +58,7 @@ You need Python 3.9+, Git, and both CLIs signed in with their subscriptions: [Co
 
 ```sh
 curl -O https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/relay.py
+python3 relay.py init          # creates AGENTS.md, CLAUDE.md, a progress file and relay.json; never overwrites
 python3 relay.py run --task "Describe the job" --dry-run
 ```
 

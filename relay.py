@@ -10,6 +10,7 @@ Run it from inside any Git repository:
                                                 Codex reviews read-only each round until it approves
   relay.py run --task "..." --take-turns 4      take turns: alternate one step each, at most 4 turns
   relay.py run ... --dry-run                    print what each assistant would be told; no model call
+  relay.py init                                 create AGENTS.md, CLAUDE.md, relay.json and a progress file
   relay.py status                               who holds the lock, and the current baton
   relay.py pass --to codex --task "..." --note "..."   hand off by hand at the end of an interactive chat
 
@@ -96,7 +97,15 @@ def read_baton():
 def write_baton(task, sender, to, status, did, next_step, watch=''):
     STATE.mkdir(parents=True, exist_ok=True)
     BATON.write_text(f'# Relay baton\n\nStatus: {status}\nFrom: {sender}\nTo: {to}\nTask: {task}\nUpdated: {now()}\n\n'
-                     f"## What I did\n{did}\n\n## What's next\n{next_step}\n\n## Watch out for\n{watch or 'Nothing new.'}\n")
+                     f"## What I did\n{did}\n\n## What's next\n{next_step}\n\n## Watch out for\n{watch or 'Nothing new.'}\n\n"
+                     "## Decisions and why\nNone yet.\n\n## Tried, didn't work\nNothing yet.\n")
+
+def add_to_baton(to, status, heading, text):
+    """Point the existing note at someone and append a section, keeping everything already in it."""
+    note = re.sub(r'^Status:.*$', f'Status: {status}', BATON.read_text(), count=1, flags=re.M)
+    note = re.sub(r'^To:.*$', f'To: {to}', note, count=1, flags=re.M)
+    note = re.sub(r'^Updated:.*$', f'Updated: {now()}', note, count=1, flags=re.M)
+    BATON.write_text(note.rstrip('\n') + f'\n\n## {heading}\n{text.strip()}\n')
 
 def log(line):
     STATE.mkdir(parents=True, exist_ok=True)
@@ -143,7 +152,11 @@ Task: {task}
 ## What I did
 ## What's next
 ## Watch out for
+## Decisions and why
+## Tried, didn't work
 
+Keep everything already under Decisions and why and Tried, didn't work: copy it forward and add to it, never
+drop it. That is how the next assistant knows what was chosen on purpose and what not to try again.
 Use Status: done only when the whole task is finished and checked. Use Status: ask-user when the next step is a
 decision that belongs to the user, and write the question under What's next. Otherwise use continue."""
 
@@ -299,11 +312,10 @@ def hand_over(task, agent, before, limit):
     baton = read_baton()
     note = (f'\n\n## Relay note\n{agent.capitalize()} ran out of usage at {now()} ({limit}). Uncommitted changes at that moment:\n'
             f"```\n{git('status', '--short') or 'none'}\n```\nCheck them with git diff before continuing.\n")
-    if baton and baton['text'] != before and baton['task'] == task:
-        if baton['status'] in ('done', 'ask-user'):
-            BATON.write_text(baton['text'].rstrip('\n') + note); return baton['status']
-        text = re.sub(r'^Status:.*$', 'Status: continue', baton['text'], count=1, flags=re.M)
-        BATON.write_text(re.sub(r'^To:.*$', f'To: {other(agent)}', text, count=1, flags=re.M).rstrip('\n') + note)
+    if baton and baton['text'] != before and baton['task'] == task and baton['status'] in ('done', 'ask-user'):
+        BATON.write_text(baton['text'].rstrip('\n') + note); return baton['status']
+    if baton and baton['task'] == task:  # whether or not it was updated this session, keep what it already says
+        add_to_baton(other(agent), 'continue', 'Relay note', note.split('## Relay note\n', 1)[1])
     else:
         write_baton(task, agent, other(agent), 'continue', f'{agent.capitalize()} ran out of usage before writing a hand-off.',
                     'Read the uncommitted changes and the progress notes, then carry on with the task.', note.strip())
@@ -404,10 +416,55 @@ def run_turns(task, turns, start, dry_run):
         agent = other(agent)
     return stop(f'turn limit reached ({turns}); run again to continue from the baton')
 
+# ---- setting up a project -------------------------------------------------------------------------------------
+AGENTS_TEMPLATE = '''# Notes for AI assistants
+
+Codex reads this file automatically; Claude reads it through CLAUDE.md. Keep it short and current.
+Both assistants start every session with no memory of earlier ones: what is written here is what they know.
+
+## What this project is
+<one or two sentences>
+
+## How to check work
+<the exact test and build commands, run from the repository root>
+
+## Rules
+- <things that must never change, e.g. "don't edit the grading rubric">
+- <how you want changes made, e.g. "small commits, plain-English messages">
+
+## Preferences
+- <style, wording, tools you prefer>
+
+## Where things stand
+See {checkpoint} for current progress, and .relay/baton.md for the task in hand.
+'''
+
+def init():
+    """Create the files that carry context between assistants. Never overwrites anything."""
+    made, kept = [], []
+    def create(name, text):
+        path = ROOT/name
+        if path.exists(): kept.append(name); return
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text); made.append(name)
+    create('AGENTS.md', AGENTS_TEMPLATE.format(checkpoint='docs/progress.md'))
+    create('CLAUDE.md', 'Read AGENTS.md first: it holds this project\'s notes for AI assistants, shared with Codex.\n')
+    create('docs/progress.md', f'# Progress\n\n{datetime.date.today()}: set up the Codex ⇄ Claude relay.\n')
+    create('relay.json', json.dumps({**DEFAULTS, 'notes': ['AGENTS.md'], 'checkpoint': 'docs/progress.md'}, indent=2) + '\n')
+    ignore = ROOT/'.gitignore'
+    lines = ignore.read_text().splitlines() if ignore.exists() else []
+    if '.relay/transcripts/' in lines: kept.append('.gitignore entry')
+    else: ignore.write_text('\n'.join([*lines, '.relay/transcripts/']) + '\n'); made.append('.gitignore entry for .relay/transcripts/')
+    claude = (ROOT/'CLAUDE.md').read_text()
+    for name in made: print('created', name)
+    for name in kept: print('kept   ', name, '(already there)')
+    if 'AGENTS.md' not in claude: print('tip     add a line to CLAUDE.md telling Claude to read AGENTS.md, so both assistants share one set of notes')
+    print('Next: fill in AGENTS.md, then try: relay.py run --task "..." --dry-run')
+    return 0
+
 # ---- command line ----------------------------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Codex <-> Claude relay'); sub = ap.add_subparsers(dest='action', required=True)
-    sub.add_parser('status')
+    sub.add_parser('status'); sub.add_parser('init')
     p = sub.add_parser('pass'); p.add_argument('--to', choices=AGENTS, required=True); p.add_argument('--note', required=True)
     p.add_argument('--next', default='Read the note above and continue the task.'); p.add_argument('--task')
     p.add_argument('--status', choices=STATUSES, default='continue')
@@ -416,14 +473,17 @@ def main(argv=None):
     r.add_argument('--calls', type=int, default=0, metavar='N'); r.add_argument('--maker', choices=AGENTS, default='claude')
     r.add_argument('--dry-run', action='store_true')
     a = ap.parse_args(argv)
+    if a.action == 'init': return init()
     if a.action == 'status':
         owner = lock_path()/'owner.json'
         print('Writer:', owner.read_text().strip() if owner.exists() else ('incomplete lock, inspect it' if busy() else 'nobody'))
         baton = read_baton(); print(baton['text'] if baton else 'No baton yet.'); return 0
     if a.action == 'pass':
-        task = a.task or (read_baton() or {}).get('task')
+        baton = read_baton(); task = a.task or (baton or {}).get('task')
         if not task: raise SystemExit('The first hand-off needs --task')
-        write_baton(task, other(a.to), a.to, a.status, a.note, a.next); log(f'hand-off by hand: {other(a.to)} → {a.to} ({a.status})')
+        if baton and baton['task'] == task: add_to_baton(a.to, a.status, f'Note added by hand ({now()})', f'{a.note}\n\nNext: {a.next}')
+        else: write_baton(task, other(a.to), a.to, a.status, a.note, a.next)
+        log(f'hand-off by hand: → {a.to} ({a.status})')
         print(f'Baton passed to {a.to}.'); return 0
     try:
         if a.check is not None: return run_check(a.task, a.check, a.calls, a.maker, a.dry_run)
