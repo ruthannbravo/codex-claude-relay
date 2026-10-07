@@ -24,7 +24,7 @@ the ledger allows no calls. Nothing retries, loops forever or runs on a schedule
 Claude runs with ANTHROPIC_* and provider overrides removed, Codex with OPENAI_API_KEY removed and a ChatGPT
 login required.
 """
-import argparse, datetime, json, os, re, subprocess, sys, tempfile, uuid
+import argparse, datetime, json, os, re, shutil, subprocess, sys, tempfile, uuid
 from pathlib import Path
 
 def git_root():
@@ -46,7 +46,7 @@ TASK_TIMEOUT = 3*60*60    # one whole-task session
 # and the last 5 lines of one that exited cleanly, so a file the assistant read earlier cannot trigger it.
 OUT_OF_USAGE = re.compile(r'usage limit|hit your (usage )?limit|limit reached|limit will reset|quota exceeded|out of (usage|credits)', re.I)
 DEFAULTS = {'notes': ['AGENTS.md', 'CLAUDE.md', 'README.md'], 'checkpoint': None, 'tests': [], 'live_command': None,
-            'review_criteria': [], 'claude_model': 'sonnet', 'codex_model': None}
+            'review_criteria': [], 'claude_model': 'sonnet', 'codex_model': None, 'blind_hide': []}
 
 def settings():
     path = ROOT/'relay.json'
@@ -219,9 +219,10 @@ def blind_prompt(agent, task, rnd):
 Task: {task}
 
 Another assistant has just worked on this task. You will not see its report yet, on purpose: form your own view
-first, so you are not steered by how it framed things. Do not open anything in .relay/ and do not read its
-commit messages for its explanations; look only at the work itself: git status, git diff, git log for which files
-changed, and the files. You are read-only: do not edit files or make model calls.
+first, so you are not steered by how it framed things. Do not open anything in .relay/, do not read its
+commit messages for its explanations, and skip its write-ups ({', '.join(notes_files()) or 'progress notes'}) even
+in git diff or git log -p: look only at the work itself (git status, git diff, git log for which files changed, and
+the files). You are read-only: do not edit files or make model calls.
 
 Judge the work against the task and the project's own criteria ({criteria}). List what is right, what is wrong or
 missing, and anything you are unsure about, each with evidence (file and line). Do not give a verdict."""
@@ -364,10 +365,30 @@ def hand_over(task, agent, before, limit):
     return None
 
 # ---- mode 2: make and check ------------------------------------------------------------------------------------
+def notes_files():
+    """The maker's own write-ups: the progress file and anything listed in blind_hide."""
+    return [n for n in [CONFIG['checkpoint'], *CONFIG['blind_hide']] if n]
+
+def hide_note_changes(stash):
+    """Set aside unsaved changes to the notes files (the work itself stays visible). Returns what to put back."""
+    put_back = []
+    for name in notes_files():
+        path = ROOT/name
+        if not path.exists() or not git('status', '--porcelain', '--', name): continue
+        copy = stash/name.replace('/', '__')
+        shutil.copy2(path, copy)
+        tracked = subprocess.run(['git', 'cat-file', '-e', f'HEAD:{name}'], cwd=ROOT, capture_output=True).returncode == 0
+        if tracked: path.write_text(git('show', f'HEAD:{name}') + '\n')
+        else: path.unlink()
+        put_back.append((copy, path))
+    return put_back
+
 def blind_session(checker, task, rnd):
-    """Review the work with the maker's note moved out of the repository, so it can't steer the first look."""
-    hidden = Path(tempfile.mkdtemp())/'baton.md'
+    """Review the work with the maker's note and its unsaved notes-file changes set aside, so they can't steer the first look."""
+    stash = Path(tempfile.mkdtemp())
+    hidden = stash/'baton.md'
     BATON.replace(hidden)
+    put_back = hide_note_changes(stash)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             last = Path(tmp)/'last.txt'
@@ -375,6 +396,7 @@ def blind_session(checker, task, rnd):
             text = (last.read_text() if last.exists() and last.read_text().strip() else transcript.read_text(errors='replace')).strip()
     finally:
         hidden.replace(BATON)
+        for copy, path in put_back: shutil.copy2(copy, path)
     return code, transcript, text
 
 def run_check(task, rounds, budget, maker, dry_run, blind=True):

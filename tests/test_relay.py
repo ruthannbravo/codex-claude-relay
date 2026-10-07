@@ -149,6 +149,15 @@ class Relay(unittest.TestCase):
         self.assertIn('- [user] No new colours', decisions)
         self.assertNotIn('None yet.', decisions)
 
+    def test_the_makers_progress_notes_are_hidden_during_the_blind_look_and_put_back(self):
+        (self.work/'docs').mkdir(); (self.work/'docs/progress.md').write_text('# Progress\n')
+        subprocess.run(['git', 'add', '.'], cwd=self.work, check=True); subprocess.run(['git', 'commit', '-qm', 'notes'], cwd=self.work, check=True)
+        self.configure(checkpoint='docs/progress.md')
+        self.assertEqual(self.relay(['make0-notes', 'blind', 'verdict-approve'], 'run', '--task', 'Review', '--check', '1'), 0)
+        self.assertIn('Maker notes visible: False', self.prompt(2))
+        self.assertIn('skip its write-ups (docs/progress.md)', self.prompt(1))
+        self.assertIn('MAKER FINDINGS', (self.work/'docs/progress.md').read_text())  # restored afterwards
+
     # Take turns
     def test_take_turns_alternates_and_stops_at_the_limit(self):
         self.assertEqual(self.relay(['continue'] * 3, 'run', '--task', 'Build', '--take-turns', '3'), 0)

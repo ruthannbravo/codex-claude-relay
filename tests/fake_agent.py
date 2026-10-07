@@ -30,16 +30,21 @@ if step == 'finish': Path('notes.txt').write_text('finished\n'); baton('done', '
 if step == 'ask': baton('ask-user', 'needs a decision'); sys.exit(0)
 if step == 'continue': baton('continue', 'one step'); sys.exit(0)
 if step == 'make0-words': baton('continue', 'reviewed, no calls', 'Calls used: 0 live model calls\n'); sys.exit(0)
-if step.startswith('make'):
+if step.startswith('make') and step[4:].isdigit():
     sys.path.insert(0, os.environ['RELAY_REPO'] + '/budget'); from relay_budget import reserve_relay_call
     used = 0
     for _ in range(int(step[4:])):
         try: reserve_relay_call(); used += 1
         except RuntimeError: break
     baton('continue', f'made a change with {used} calls', f'Calls used: {used}\n'); sys.exit(0)
+if step == 'make0-notes':  # writes its findings into the progress file as well as the note
+    Path('docs').mkdir(exist_ok=True)
+    Path('docs/progress.md').write_text(Path('docs/progress.md').read_text() + 'MAKER FINDINGS: footer link broken\n')
+    baton('continue', 'reviewed', 'Calls used: 0\n'); sys.exit(0)
 if step == 'blind':
     seen = Path('.relay/baton.md').exists()
-    text = f'Blind finding: the footer link is broken (index.html:12). Report visible during blind look: {seen}'
+    notes = Path('docs/progress.md').exists() and 'MAKER FINDINGS' in Path('docs/progress.md').read_text()
+    text = f'Blind finding: the footer link is broken (index.html:12). Report visible during blind look: {seen}. Maker notes visible: {notes}'
     if '-o' in args: Path(args[args.index('-o') + 1]).write_text(text)
     else: print(text)
     sys.exit(0)
