@@ -175,7 +175,8 @@ def screenshots_note():
     shots = sorted(SHOTS.glob('*.png')) if SHOTS.exists() else []
     if not shots: return ''
     return ('\nScreenshots of the page as it is now, taken by the relay (you may open these even though they are in .relay/): '
-            + ', '.join(rel(s) for s in shots) + '. Look at them: judge what people will actually see, at desktop and phone size.')
+            + ', '.join(rel(s) for s in shots) + '. Look at them: judge what people will actually see, at desktop and phone size. '
+            'In the phone pictures the page is the left 390 pixels; the grey strip on the right is only padding from the screenshot tool.')
 
 def baton_shape(agent, task, extra=''):
     return f"""# Relay baton

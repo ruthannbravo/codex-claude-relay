@@ -158,6 +158,7 @@ class Relay(unittest.TestCase):
         self.relay(['make0', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1')
         self.assertIn('relay.py look', self.prompt(0))
         self.assertIn('.relay/screenshots/index-html-phone.png', self.prompt(1))
+        self.assertIn('the grey strip on the right is only padding', self.prompt(1))
         self.assertIn('--image=', (self.tmp/'state.args1').read_text())
 
     def test_the_lock_name_can_match_a_projects_own(self):
