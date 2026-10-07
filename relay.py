@@ -10,13 +10,18 @@ Run it from inside any Git repository:
                                                 Codex reviews read-only each round until it approves
   relay.py run --task "..." --take-turns 4      take turns: alternate one step each, at most 4 turns
   relay.py run ... --dry-run                    print what each assistant would be told; no model call
-  relay.py init                                 create AGENTS.md, CLAUDE.md, relay.json and a progress file
+  relay.py init                                 create AGENTS.md, CLAUDE.md, relay.json and a progress file, then
+                                                ask you 6 quick questions about the project (Enter skips one)
+  relay.py answer                               answer the questions the assistants left for you, then carry on
   relay.py status                               who holds the lock, and the current baton
   relay.py pass --to codex --task "..." --note "..."   hand off by hand at the end of an interactive chat
 
 Shared state lives in .relay/ in the repository: baton.md (the hand-off note), log.md (one line per event),
 reviews/ (make-and-check reviews) and transcripts/ (everything each assistant printed; add it to .gitignore).
 Optional settings come from relay.json at the repository root; see README.md.
+
+When an assistant needs you (your goals, taste or a fact only you know), the relay shows its questions. At a
+keyboard you answer there and it carries on; otherwise it saves them and stops until you run relay.py answer.
 
 Every session claims a lock in the Git directory so only one assistant edits at a time, and gets a call
 ledger (RELAY_CALL_BUDGET) that your test runner can check before each live model call. Outside make and check
@@ -37,16 +42,19 @@ BATON = STATE/'baton.md'
 LOG = STATE/'log.md'
 REVIEWS = STATE/'reviews'
 TRANSCRIPTS = STATE/'transcripts'
+QUESTIONS = STATE/'questions.json'
 AGENTS = ('codex', 'claude')
 STATUSES = ('continue', 'done', 'ask-user')
 MAX_TURNS, MAX_ROUNDS = 8, 5
 TURN_TIMEOUT = 45*60      # one step in take-turns mode, and one review
 TASK_TIMEOUT = 3*60*60    # one whole-task session
+MAX_PAUSES = 3            # question stops in one run, so a run always ends
 # How the CLIs report a spent subscription allowance. Checked in the last 10 lines of a session that failed,
 # and the last 5 lines of one that exited cleanly, so a file the assistant read earlier cannot trigger it.
 OUT_OF_USAGE = re.compile(r'usage limit|hit your (usage )?limit|limit reached|limit will reset|quota exceeded|out of (usage|credits)', re.I)
 DEFAULTS = {'notes': ['AGENTS.md', 'CLAUDE.md', 'README.md'], 'checkpoint': None, 'tests': [], 'live_command': None,
-            'review_criteria': [], 'claude_model': 'sonnet', 'codex_model': None, 'blind_hide': []}
+            'review_criteria': [], 'claude_model': 'sonnet', 'codex_model': None, 'blind_hide': [],
+            'keep_chats': False}
 
 def settings():
     path = ROOT/'relay.json'
@@ -150,6 +158,8 @@ def rules(live_calls=0):
 The relay already holds the writer lock for you: do not claim or release it.
 Rules: preserve existing untracked work; stay on the current Git branch; never configure an API key or fallback;
 no pushing or publishing. {calls}
+If the task is unclear in a way only the user can settle (their goals, audience, taste or a fact about their
+business) and the notes don't answer it, don't guess: before changing anything, ask under Questions for you.
 {tests} Commit your work in small scoped commits (if Git is read-only in your sandbox, leave changes
 uncommitted and say so under Watch out for).{checkpoint}"""
 
@@ -167,6 +177,7 @@ Task: {task}
 ## Watch out for
 ## Decisions and why
 ## Tried, didn't work
+## Questions for you
 
 Keep everything already under Decisions and why and Tried, didn't work: copy it forward and add to it, never
 drop it. That is how the next assistant knows what was chosen on purpose and what not to try again.
@@ -174,8 +185,12 @@ Start each decision with who made it: [user] or [codex]/[claude]. [user] decisio
 decision may be challenged, but only with evidence: say what you found, change it, and keep the old line
 marked "(replaced: ...)". Mark every claim about the work as (checked: how you checked it) or (assumed). Before
 relying on anything (assumed) from an earlier note, check it yourself; earlier notes are leads, not facts.
-Use Status: done only when the whole task is finished and checked. Use Status: ask-user when the next step is a
-decision that belongs to the user, and write the question under What's next. Otherwise use continue."""
+Questions for you is for what only the user can settle: their goals, taste, a fact about their business, or anything
+you would otherwise mark (assumed) about what they want. Don't settle those yourself. At most 3, numbered, in plain
+English a non-programmer can answer (no file names, line numbers or code); under each, if you have a view, a line "Suggest: <answer>, because <one-line reason>". The
+relay puts them to the user and waits, so only ask what matters; write "None." if there are none.
+Use Status: done only when the whole task is finished and checked. Use Status: ask-user when you can't sensibly go on
+until the user answers. Otherwise use continue."""
 
 def backup_prompt(agent, task, picking_up):
     start = (f'{other(agent).capitalize()} was working on this and ran out of usage. Read the baton first and carry on '
@@ -225,7 +240,8 @@ in git diff or git log -p: look only at the work itself (git status, git diff, g
 the files). You are read-only: do not edit files or make model calls.{run_tests()}
 
 Judge the work against the task and the project's own criteria ({criteria}). List what is right, what is wrong or
-missing, and anything you are unsure about, each with evidence (file and line). Do not give a verdict."""
+missing, and anything you are unsure about, each with evidence (file and line). Anything only the user can settle
+(their goals, taste or business facts) is a question for them, not something to decide. Do not give a verdict."""
 
 def run_tests():
     if not CONFIG['tests']: return ''
@@ -241,11 +257,17 @@ You are read-only: do not edit files or make model calls.{run_tests()} Read {rel
 actual work: git log, git diff, the files and any saved results it names. Judge it against the task and the
 project's own criteria ({criteria}). Verify claims yourself rather than trusting the report; quote evidence.
 {compare(blind_findings)}
-Your final message is saved as the review. Write the findings first (most important first, each with evidence and
-the correction needed). End with exactly one of these as the last line, and nothing after it:
+Your final message is saved as the review, and the user may read it, so keep it short and plain:
+1. Summary: two or three sentences anyone could follow, no jargon.
+2. Must fix: at most 3 items, most important first, each with evidence and the correction needed.
+3. Could also improve: optional, one line each.
+4. Questions for you: what only the user can settle (their goals, taste, business facts), including any claim in the
+   report marked (assumed) about what they want that you can't verify. Don't settle these yourself. At most 3,
+   numbered, in plain English a non-programmer can answer (no file names, line numbers or code), each followed by "Suggest: <answer>, because <one-line reason>" if you have a view; "None." if none.
+   The relay puts them to the user before the next round.
+End with exactly one of these as the last line, and nothing after it:
 "Verdict: approve", "Verdict: revise" or "Verdict: ask-user".
-Use approve only when the task is met and checked. Use ask-user when the remaining question is a judgement that
-belongs to the user, and state the question."""
+Use approve only when the task is met and checked. Use ask-user when what's left depends on the user's answers."""
 
 def compare(blind_findings):
     if not blind_findings: return ''
@@ -254,9 +276,11 @@ Before reading the report, you reviewed the work blind and wrote this:
 
 {blind_findings}
 
-Now compare. List separately: problems only you found, problems only the maker reported, and anything you
-disagree on. Re-check each against the code before deciding; agreement between two assistants is not evidence.
-Do not drop a blind finding just because the report doesn't mention it.
+Now compare, in a short "Compared with the report" section: one line each for problems only you found, problems only
+the maker reported, and anything you disagree on. Re-check each against the code before deciding; agreement between
+two assistants is not evidence. Then a "Changed my mind" section: each blind finding you dropped or changed after
+reading the report, with the new evidence that changed it (file and line, or a test result). Reading the report is
+not evidence: with no new evidence, keep the finding. Write "None." if nothing changed.
 """
 
 # ---- running one assistant -------------------------------------------------------------------------------------
@@ -267,14 +291,20 @@ def command_for(agent, prompt, last_message, live_calls=False, read_only=False):
             # The project's own tests are allowed so Claude can prove a finding, as Codex can in its read-only sandbox.
             tools = ['Read', 'Glob', 'Grep', *[f'Bash({t}:*)' for t in CONFIG['tests']], 'Bash(git diff:*)', 'Bash(git log:*)',
                      'Bash(git show:*)', 'Bash(git status:*)']
-            return ['claude', '-p', prompt, '--safe-mode', *model, '--permission-mode', 'default', '--allowedTools', *tools]
+            return ['claude', '-p', prompt, '--safe-mode', *model, *no_chat(agent), '--permission-mode', 'default', '--allowedTools', *tools]
         tests = [f'Bash({t}:*)' for t in CONFIG['tests']]
         live = [f"Bash({CONFIG['live_command']}:*)"] if live_calls and CONFIG['live_command'] else []
         tools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', *tests, *live, 'Bash(git status:*)', 'Bash(git diff:*)',
                  'Bash(git log:*)', 'Bash(git add:*)', 'Bash(git commit:*)']
-        return ['claude', '-p', prompt, '--safe-mode', *model, '--permission-mode', 'acceptEdits', '--allowedTools', *tools]
+        return ['claude', '-p', prompt, '--safe-mode', *model, *no_chat(agent), '--permission-mode', 'acceptEdits', '--allowedTools', *tools]
     model = ['-m', CONFIG['codex_model']] if CONFIG['codex_model'] else []
-    return ['codex', 'exec', '-C', str(ROOT), *model, '-s', 'read-only' if read_only else 'workspace-write', '-o', last_message, prompt]
+    return ['codex', 'exec', *no_chat(agent), '-C', str(ROOT), *model, '-s', 'read-only' if read_only else 'workspace-write', '-o', last_message, prompt]
+
+def no_chat(agent):
+    """Each session is a fresh, separate conversation (that is what keeps the blind review blind), but it need not be
+    saved as a chat in the apps' history: the relay keeps its own record in .relay/. Set keep_chats to keep them."""
+    if CONFIG['keep_chats']: return []
+    return ['--no-session-persistence'] if agent == 'claude' else ['--ephemeral']
 
 def subscription_env(agent):
     env = os.environ.copy()
@@ -319,13 +349,115 @@ def pick_up(task, start):
 
 def busy(): return lock_path().exists()
 
+# ---- questions for the user -------------------------------------------------------------------------------------
+QUESTIONS_HEADING = re.compile(r'^(?:#{1,6}\s*|\*\*|\d+\.\s*\**)Questions for you:?(?:\*\*)?:?[ \t]*(.*)$', re.M)
+SECTION_END = re.compile(r'^(?:#{1,6}\s|\*\*[^*\n]+\*\*:?\s*$|Verdict:)', re.M)
+
+def parse_questions(text):
+    """Numbered questions under a 'Questions for you' heading, each with an optional 'Suggest:' line."""
+    heading = None
+    for heading in QUESTIONS_HEADING.finditer(text): pass  # the last one: the newest note or review
+    if not heading: return []
+    body = heading[1] + '\n' + text[heading.end():]
+    end = SECTION_END.search(body, 1)
+    questions = []
+    for line in body[:end.start() if end else None].splitlines():
+        hint = re.match(r'\s*(?:[-*]\s*)?(?:\*\*)?Suggest(?:ed|ion)?(?:\*\*)?\s*:(?:\*\*)?\s*(.+)', line, re.I)
+        item = re.match(r'\s*\d+[.)]\s+(.+)', line)
+        if hint and questions: questions[-1]['suggest'] = hint[1].strip()
+        elif item:  # the suggestion is sometimes written on the same line as the question
+            parts = re.split(r'\s+(?:\*\*)?Suggest(?:ed|ion)?(?:\*\*)?\s*:(?:\*\*)?\s*', item[1].strip(), maxsplit=1, flags=re.I)
+            questions.append({'question': parts[0].strip(), 'suggest': parts[1].strip() if len(parts) > 1 else ''})
+        elif line.strip() and questions and not questions[-1]['suggest']: questions[-1]['question'] += ' ' + line.strip()
+    return [q for q in questions if not re.fullmatch(r'(none|n/?a)\.?', q['question'], re.I)]
+
+def questions_in(baton):
+    """The questions an assistant left in the baton; a bare ask-user status becomes one question from What's next."""
+    questions = parse_questions(baton['text'])
+    if not questions and baton['status'] == 'ask-user':
+        found = re.search(r"^## What's next\s*\n(.*?)(?=^## |\Z)", baton['text'], re.M | re.S)
+        questions = [{'question': ' '.join((found[1] if found else '').split()) or f'The assistant needs a decision from you; see {rel(BATON)}.', 'suggest': ''}]
+    return questions
+
+def show_question(n, q):
+    print(f'{n}. {q["question"]}')
+    if q['suggest']: print(f'   Suggested: {q["suggest"]}')
+
+def ask_user(questions, asked_by, resume):
+    """Put the questions to the user. At a keyboard: ask now, save the answers as [user] decisions and return True.
+    Otherwise save them for `relay.py answer`, which records the answers and re-runs `resume`; return False."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    QUESTIONS.write_text(json.dumps({'asked_by': asked_by, 'asked': now(), 'questions': questions, 'resume': resume}, indent=2) + '\n')
+    log(f'{asked_by} asked the user {len(questions)} question(s)')
+    print(f'\n{asked_by.capitalize()} has {len(questions)} question{"s" if len(questions) != 1 else ""} for you before carrying on:\n')
+    if sys.stdin.isatty():
+        try:
+            answers = []
+            for n, q in enumerate(questions, 1):
+                show_question(n, q)
+                answers.append(input(f'   Your answer (Enter = {"go with the suggestion" if q["suggest"] else "let the assistants decide"}): '))
+                print()
+            save_answers(questions, answers)
+            print('Thanks! Saved as your decisions. Continuing…', flush=True)
+            return True
+        except EOFError: print()
+    for n, q in enumerate(questions, 1): show_question(n, q); print()
+    print('Answer them with: python3 relay.py answer   (it asks them one by one, then carries on)')
+    return False
+
+def save_answers(questions, answers):
+    """Record each answer as a final [user] decision. Empty or "suggested" takes the suggestion; "skip" leaves it to the assistants."""
+    for q, given in zip(questions, answers):
+        given = given.strip()
+        if given.lower() in ('', 'suggested') and q['suggest']: record_decision(f'{q["question"]} Answer: {q["suggest"]} (the suggested answer)')
+        elif given.lower() in ('', 'skip', 'suggested'): record_decision(f'Left to the assistants to decide: {q["question"]}')
+        else: record_decision(f'{q["question"]} Answer: {given}')
+    note = BATON.read_text()
+    note = re.sub(r"(^## Questions for you\s*\n).*?(?=^## |\Z)", r'\1Answered: see Decisions and why.\n\n', note, count=1, flags=re.M | re.S)
+    BATON.write_text(note)
+    QUESTIONS.unlink(missing_ok=True)
+    log(f'the user answered {len(answers)} question(s)')
+
+def carry_on(to):
+    """After the user's answers, point the baton at whoever continues."""
+    note = re.sub(r'^Status:.*$', 'Status: continue', BATON.read_text(), count=1, flags=re.M)
+    BATON.write_text(re.sub(r'^To:.*$', f'To: {to}', note, count=1, flags=re.M))
+
+def answer(given):
+    if not QUESTIONS.exists(): print('No questions are waiting for you.'); return 0
+    saved = json.loads(QUESTIONS.read_text()); questions = saved['questions']
+    if given:
+        if len(given) != len(questions): raise SystemExit(f'There are {len(questions)} questions: give one --answer for each, in order ("suggested" or "skip" are fine)')
+        save_answers(questions, given)
+    else:
+        if not sys.stdin.isatty():
+            for n, q in enumerate(questions, 1): show_question(n, q)
+            raise SystemExit('Answer in a terminal, or pass one --answer "..." per question, in order')
+        print(f'{saved["asked_by"].capitalize()} asked:\n')
+        answers = []
+        for n, q in enumerate(questions, 1):
+            show_question(n, q)
+            answers.append(input(f'   Your answer (Enter = {"go with the suggestion" if q["suggest"] else "let the assistants decide"}): ')); print()
+        save_answers(questions, answers)
+    resume = saved.get('resume')
+    if not resume: print('Saved as your decisions.'); return 0
+    carry_on(resume['to'])
+    print('Saved as your decisions. Carrying on…', flush=True)
+    return main(resume['args'])
+
+def pause(questions, asked_by, resume, pauses):
+    """Returns None to carry on, or the exit code to stop with."""
+    if pauses > MAX_PAUSES: return stop(f'{MAX_PAUSES} question stops in one run; read {rel(BATON)} and run again', ok=False)
+    if ask_user(questions, asked_by, resume): return None
+    return stop('waiting for your answers: run python3 relay.py answer')
+
 # ---- mode 1: backup --------------------------------------------------------------------------------------------
 def run_backup(task, start, dry_run):
     task, agent = pick_up(task, start)
     if dry_run:
         print(f'--- {agent} starts; {other(agent)} takes over only if {agent} runs out of usage\n{backup_prompt(agent, task, False)}\n')
         print('Dry run: no model calls, nothing claimed or logged.'); return 0
-    branch, picking_up, ran_out = git('branch', '--show-current'), False, {}
+    branch, picking_up, ran_out, pauses = git('branch', '--show-current'), False, {}, 0
     log(f'relay started (backup): {agent} first, branch {branch}, task: {task}')
     while True:
         if busy(): return stop('workspace already claimed; run status and stop the other writer first', ok=False)
@@ -353,8 +485,14 @@ def run_backup(task, start, dry_run):
         baton = read_baton()
         if not baton or baton['text'] == before: return stop(f'{agent} finished without updating the baton; see {rel(transcript)}', ok=False)
         log(f'{agent} → {baton["status"]} (HEAD {git("rev-parse", "--short", "HEAD")})')
+        questions = questions_in(baton)
+        if questions:
+            pauses += 1
+            done = baton['status'] == 'done'
+            stopped = pause(questions, agent, None if done else {'args': ['run', '--start', agent], 'to': agent}, pauses)
+            if stopped is not None: return stopped
+            if not done: carry_on(agent); picking_up = False; continue
         if baton['status'] == 'done': return stop('task done')
-        if baton['status'] == 'ask-user': return stop(f"the user needs to decide; see What's next in {rel(BATON)}")
         return stop(f'{agent} ended its session before finishing; run again to continue from the baton')
 
 def hand_over(task, agent, before, limit):
@@ -412,7 +550,7 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True):
     if budget and not CONFIG['live_command']: raise SystemExit('--calls needs "live_command" in relay.json (the only command allowed to make live calls)')
     if budget and maker == 'codex': raise SystemExit('--calls needs Claude as the maker: Codex\'s sandbox usually cannot reach a model CLI')
     task, _ = pick_up(task, maker)
-    checker, review, used = other(maker), '', 0
+    checker, review, used, pauses = other(maker), '', 0, 0
     if dry_run:
         print(f'--- round 1 maker: {maker}\n{maker_prompt(maker, task, 1, rounds, budget, "")}\n')
         if blind: print(f'--- round 1 blind review: {checker} (read-only, report hidden)\n{blind_prompt(checker, task, 1)}\n')
@@ -421,26 +559,34 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True):
     branch = git('branch', '--show-current')
     log(f'relay started (make and check): {maker} makes, {checker} checks, up to {rounds} rounds, {budget} live calls, branch {branch}, task: {task}')
     ledger = create_budget(budget)
+    resume = lambda rnd: {'args': ['run', '--check', str(max(1, rounds - rnd + 1)), '--calls', str(budget - used), '--maker', maker,
+                                   *([] if blind else ['--no-blind'])], 'to': maker}
     for rnd in range(1, rounds + 1):
-        if busy(): return stop(f'round {rnd}: workspace already claimed', ok=False)
-        before = BATON.read_text() if BATON.exists() else ''
-        with tempfile.TemporaryDirectory() as tmp:
-            print(f'Round {rnd}: {maker.capitalize()} working… ', end='', flush=True)
-            command = command_for(maker, maker_prompt(maker, task, rnd, rounds, budget - used, review), str(Path(tmp)/'last.txt'), live_calls=budget - used > 0)
-            code, transcript = session(maker, command, f'round-{rnd}-make', TASK_TIMEOUT, budget=ledger)
-        if code is None: print('stopped'); return stop(f'round {rnd}: {maker} ran past {TASK_TIMEOUT//3600} hours', ok=False)
-        if code: print('failed'); return stop(f'round {rnd}: {maker} stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
-        print('done', flush=True)
-        baton = read_baton()
-        if not baton or baton['text'] == before: return stop(f'round {rnd}: {maker} finished without updating the baton', ok=False)
-        if git('branch', '--show-current') != branch: return stop(f'round {rnd}: {maker} changed branch', ok=False)
-        reported = re.search(r'^Calls used:\s*(\d+)\b', baton['text'], re.M)
-        if not reported: return stop(f'round {rnd}: {maker} did not report Calls used', ok=False)
-        measured = budget_used(ledger)
-        if int(reported[1]) != measured - used: return stop(f'round {rnd}: reported calls ({reported[1]}) disagree with the ledger ({measured - used})', ok=False)
-        used = measured
-        log(f'round {rnd}: {maker} made (calls {reported[1]}, total {used} of {budget}; HEAD {git("rev-parse", "--short", "HEAD")})')
-        if baton['status'] == 'ask-user': return stop(f"the user needs to decide; see What's next in {rel(BATON)}")
+        while True:  # the maker's turn, again after any questions it asked
+            if busy(): return stop(f'round {rnd}: workspace already claimed', ok=False)
+            before = BATON.read_text() if BATON.exists() else ''
+            with tempfile.TemporaryDirectory() as tmp:
+                print(f'Round {rnd}: {maker.capitalize()} working… ', end='', flush=True)
+                command = command_for(maker, maker_prompt(maker, task, rnd, rounds, budget - used, review), str(Path(tmp)/'last.txt'), live_calls=budget - used > 0)
+                code, transcript = session(maker, command, f'round-{rnd}-make', TASK_TIMEOUT, budget=ledger)
+            if code is None: print('stopped'); return stop(f'round {rnd}: {maker} ran past {TASK_TIMEOUT//3600} hours', ok=False)
+            if code: print('failed'); return stop(f'round {rnd}: {maker} stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
+            print('done', flush=True)
+            baton = read_baton()
+            if not baton or baton['text'] == before: return stop(f'round {rnd}: {maker} finished without updating the baton', ok=False)
+            if git('branch', '--show-current') != branch: return stop(f'round {rnd}: {maker} changed branch', ok=False)
+            reported = re.search(r'^Calls used:\s*(\d+)\b', baton['text'], re.M)
+            if not reported: return stop(f'round {rnd}: {maker} did not report Calls used', ok=False)
+            measured = budget_used(ledger)
+            if int(reported[1]) != measured - used: return stop(f'round {rnd}: reported calls ({reported[1]}) disagree with the ledger ({measured - used})', ok=False)
+            used = measured
+            log(f'round {rnd}: {maker} made (calls {reported[1]}, total {used} of {budget}; HEAD {git("rev-parse", "--short", "HEAD")})')
+            questions = questions_in(baton)
+            if not questions: break
+            pauses += 1
+            stopped = pause(questions, maker, resume(rnd), pauses)
+            if stopped is not None: return stopped
+            carry_on(maker)
         blind_findings = None
         if blind:
             print(f'Round {rnd}: {checker.capitalize()} reviewing blind… ', end='', flush=True)
@@ -469,8 +615,16 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True):
         save_review(rnd, checker, verdict, saved)
         review = text
         if not verdict: return stop(f'round {rnd}: the review ended without a verdict; read {rel(saved)}', ok=False)
+        questions = parse_questions(text)
+        if verdict == 'ask-user' and not questions:
+            questions = [{'question': f'The reviewer needs a decision from you; read {rel(saved)}.', 'suggest': ''}]
+        if questions:
+            pauses += 1
+            stopped = pause(questions, checker, None if verdict == 'approve' else resume(rnd + 1), pauses)
+            if stopped is not None: return stopped
+            if verdict != 'approve': carry_on(maker)
+            review += '\n\nThe user has answered the questions above: see their decisions in the baton.'
         if verdict == 'approve': return stop(f'approved by {checker} in round {rnd}; {used} of {budget} live calls used')
-        if verdict == 'ask-user': return stop(f'the reviewer needs the user to decide; read {rel(saved)}')
     return stop(f'round limit reached ({rounds}) without approval; {used} of {budget} live calls used')
 
 def save_review(rnd, checker, verdict, saved):
@@ -491,6 +645,7 @@ def run_turns(task, turns, start, dry_run):
         print('Dry run: no model calls, nothing claimed or logged.'); return 0
     branch = git('branch', '--show-current')
     log(f'relay started (take turns): up to {turns} turns, {agent} first, branch {branch}, task: {task}')
+    pauses = 0
     for turn in range(1, turns + 1):
         if busy(): return stop(f'turn {turn}: workspace already claimed', ok=False)
         before = BATON.read_text() if BATON.exists() else ''
@@ -505,8 +660,15 @@ def run_turns(task, turns, start, dry_run):
         if baton['status'] not in STATUSES: return stop(f'turn {turn}: baton status "{baton["status"]}" not understood', ok=False)
         if git('branch', '--show-current') != branch: return stop(f'turn {turn}: {agent} changed branch', ok=False)
         log(f'turn {turn}: {agent} → {baton["status"]} (HEAD {git("rev-parse", "--short", "HEAD")})')
+        questions = questions_in(baton)
+        if questions:
+            pauses += 1
+            done = baton['status'] == 'done'
+            resume = {'args': ['run', '--take-turns', str(max(1, turns - turn)), '--start', agent], 'to': agent}
+            stopped = pause(questions, agent, None if done else resume, pauses)
+            if stopped is not None: return stopped
+            if not done: carry_on(agent); continue  # whoever asked carries on with the answers
         if baton['status'] == 'done': return stop('task done')
-        if baton['status'] == 'ask-user': return stop(f"the user needs to decide; see What's next in {rel(BATON)}")
         agent = other(agent)
     return stop(f'turn limit reached ({turns}); run again to continue from the baton')
 
@@ -516,9 +678,6 @@ AGENTS_TEMPLATE = '''# Notes for AI assistants
 Codex reads this file automatically; Claude reads it through CLAUDE.md. Keep it short and current.
 Both assistants start every session with no memory of earlier ones: what is written here is what they know.
 
-## What this project is
-<one or two sentences>
-
 ## How to check work
 <the exact test and build commands, run from the repository root>
 
@@ -526,22 +685,53 @@ Both assistants start every session with no memory of earlier ones: what is writ
 - <things that must never change, e.g. "don't edit the grading rubric">
 - <how you want changes made, e.g. "small commits, plain-English messages">
 
-## Preferences
-- <style, wording, tools you prefer>
-
 ## Where things stand
 See {checkpoint} for current progress, and .relay/baton.md for the task in hand.
 '''
 
-def init():
-    """Create the files that carry context between assistants. Never overwrites anything."""
+CLAUDE_TEMPLATE = '''Read AGENTS.md first: it holds this project's notes for AI assistants, shared with Codex.
+
+If you run relay.py for the user and it stops with questions for them, read .relay/questions.json and put each
+question to the user with your question tool: the suggested answer first, marked as recommended, with its reason.
+Then pass their answers, in order, with: python3 relay.py answer --answer "..." --answer "..." ("suggested" or "skip" work too).
+'''
+SETUP = [('What is this project, and who is it for?', 'What it is and who it is for'),
+         ('How do you check it works? (a command, or "I look at it on my phone")', 'How the owner checks work'),
+         ('What must never change or break?', 'Must never change or break'),
+         ('What does "good" look like to you? Words, examples you like, things you dislike.', 'What good looks like'),
+         ('Which decisions must always come to you? (wording, colours, anything public or that costs money)', 'Decisions that always go to the owner'),
+         ('Anything the AIs should never do?', 'Never do')]
+ABOUT = ('<!-- relay:about (your answers to relay.py init; run it again to change them) -->', '<!-- /relay:about -->')
+
+def about_you(given):
+    """Ask the six setup questions (or take them from --answer) and keep the answers at the top of AGENTS.md."""
+    if given: answers = given + [''] * (len(SETUP) - len(given))
+    elif sys.stdin.isatty():
+        print('\nA few quick questions, so both assistants know what you want. Press Enter to skip any.\n')
+        try: answers = [input(f'{n}. {q}\n   ') for n, (q, _) in enumerate(SETUP, 1)]
+        except EOFError: return
+    else:
+        print('tip     run relay.py init in a terminal to answer 6 quick questions about the project'); return
+    lines = [f'- {label}: {a.strip() or "not said yet (ask the owner if it matters)"}' for (_, label), a in zip(SETUP, answers)]
+    block = f'{ABOUT[0]}\n## About this project and its owner\n' + '\n'.join(lines) + \
+            "\nThese are the owner's own answers: treat them as [user] decisions.\n" + ABOUT[1]
+    path = ROOT/'AGENTS.md'
+    text = path.read_text()
+    if ABOUT[0] in text: text = re.sub(re.escape(ABOUT[0]) + '.*?' + re.escape(ABOUT[1]), lambda _: block, text, flags=re.S)
+    elif text.startswith('# '): title, _, rest = text.partition('\n'); text = f'{title}\n\n{block}\n{rest}'
+    else: text = f'{block}\n\n{text}'
+    path.write_text(text)
+    print('\nsaved   your answers at the top of AGENTS.md (run relay.py init again to change them)')
+
+def init(given=()):
+    """Create the files that carry context between assistants, then ask about the project. Never overwrites a file."""
     made, kept = [], []
     def create(name, text):
         path = ROOT/name
         if path.exists(): kept.append(name); return
         path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text); made.append(name)
     create('AGENTS.md', AGENTS_TEMPLATE.format(checkpoint='docs/progress.md'))
-    create('CLAUDE.md', 'Read AGENTS.md first: it holds this project\'s notes for AI assistants, shared with Codex.\n')
+    create('CLAUDE.md', CLAUDE_TEMPLATE)
     create('docs/progress.md', f'# Progress\n\n{datetime.date.today()}: set up the Codex ⇄ Claude relay.\n')
     create('relay.json', json.dumps({**DEFAULTS, 'notes': ['AGENTS.md'], 'checkpoint': 'docs/progress.md'}, indent=2) + '\n')
     ignore = ROOT/'.gitignore'
@@ -552,13 +742,17 @@ def init():
     for name in made: print('created', name)
     for name in kept: print('kept   ', name, '(already there)')
     if 'AGENTS.md' not in claude: print('tip     add a line to CLAUDE.md telling Claude to read AGENTS.md, so both assistants share one set of notes')
-    print('Next: fill in AGENTS.md, then try: relay.py run --task "..." --dry-run')
+    about_you(list(given))
+    print('Next: add your test commands to AGENTS.md if you have any, then try: relay.py run --task "..." --dry-run')
     return 0
 
 # ---- command line ----------------------------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Codex <-> Claude relay'); sub = ap.add_subparsers(dest='action', required=True)
-    sub.add_parser('status'); sub.add_parser('init')
+    sub.add_parser('status')
+    i = sub.add_parser('init'); i.add_argument('--answer', action='append', default=[], help='answers to the setup questions, in order')
+    q = sub.add_parser('answer'); q.add_argument('--answer', action='append', default=[], metavar='TEXT',
+                                                 help='one per waiting question, in order; "suggested" or "skip" work too')
     p = sub.add_parser('pass'); p.add_argument('--to', choices=AGENTS, required=True); p.add_argument('--note', required=True)
     p.add_argument('--next', default='Read the note above and continue the task.'); p.add_argument('--task')
     p.add_argument('--status', choices=STATUSES, default='continue')
@@ -569,7 +763,8 @@ def main(argv=None):
     r.add_argument('--no-blind', action='store_true', help='make and check: skip the blind first look (cheaper, more anchoring)')
     r.add_argument('--dry-run', action='store_true')
     a = ap.parse_args(argv)
-    if a.action == 'init': return init()
+    if a.action == 'init': return init(a.answer)
+    if a.action == 'answer': return answer(a.answer)
     if a.action == 'status':
         owner = lock_path()/'owner.json'
         print('Writer:', owner.read_text().strip() if owner.exists() else ('incomplete lock, inspect it' if busy() else 'nobody'))
