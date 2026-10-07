@@ -6,7 +6,7 @@ Let two AI coding helpers, **Codex** (by OpenAI) and **Claude** (by Anthropic), 
 
 ## What it does
 
-**If one runs out of usage, the other carries on.** Both helpers come with usage limits (hourly, daily or weekly). When one hits its limit mid-job, in any mode, the other reads the note and picks up where it stopped.
+**If one runs out of usage, the other carries on.** Both helpers come with usage limits (hourly, daily or weekly). When one hits its limit mid-job, in any mode, the other reads the note and picks up where it stopped. Turn on **autoswitch** and it works even in a normal Claude chat: when the chat hits its limit, Codex carries on with your last request in the background.
 
 ![If one runs out, the other carries on.](docs/images/2-backup.png)
 
@@ -51,6 +51,7 @@ Either way you need [Codex](https://github.com/openai/codex) and [Claude Code](h
 | Set up a project (once per project: 6 quick questions) | "Set up the relay for this project." | `relay init` |
 | Give it a job | "Use the relay to make the home page calmer." | `relay run --task "Make the home page calmer"` |
 | One does the work, the other checks it | "Use the relay with checking to make the home page calmer." | `relay run --task "..." --check 2` |
+| Let Codex carry on when a normal Claude chat hits its limit | "Turn on the relay's autoswitch." | `relay autoswitch on` |
 | See where things stand | "What's the relay up to?" | `relay status` |
 | Answer its questions later | The AI asks you directly | `relay answer` |
 | Update to the latest version | "Update the relay." | run the install line again |
@@ -94,7 +95,7 @@ A single Python file with no dependencies. It runs the `codex` and `claude` CLIs
 | **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round the maker (Claude, or `--maker codex`) does the work and may make live test calls within the budget. The checker reviews read-only, blind first, and ends with approve, revise or ask-user. | Approved · waiting for your answers · round limit (1–5) · call budget exceeded or misreported · any error. If the maker runs out of usage, the other finishes the job alone (and it tells you how to get it checked later). |
 | **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · waiting for your answers · turn limit (1–8) · any error. If one runs out of usage, the other finishes alone. |
 
-Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers; without a keyboard it lists them and takes `--answer` once per question), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). `teach [--remove]` (add or remove the relay note in Claude's and Codex's general instructions), `uninstall`, `version`. Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
+Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers; without a keyboard it lists them and takes `--answer` once per question), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). `teach [--remove]` (add or remove the relay note in Claude's and Codex's general instructions), `autoswitch on|off|status`, `uninstall`, `version`. Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
 
 Without installing, the same file also runs as `python3 relay.py ...` from inside a project; `install.sh` just keeps one copy in `~/.relay` and adds a `relay` command (in `~/.local/bin`, added to your shell's PATH if needed).
 
@@ -143,6 +144,10 @@ See [`relay.example.json`](relay.example.json).
 | `keep_chats` | Also save each session as a chat in the apps (sessions are kept separate so the blind look stays blind) | `false` |
 
 Add `.relay/transcripts/` and `.relay/screenshots/` to your `.gitignore` (`init` adds the first).
+
+### Autoswitch
+
+`relay autoswitch on` adds a Claude Code `StopFailure` hook to `~/.claude/settings.json` that runs `relay takeover --from-claude-hook`. When a normal Claude Code chat ends on a usage limit (the `rate_limit` error, or limit wording in the message) in a project that has a `relay.json`, it writes a hand-off note from the user's last message, starts `relay run --start codex` in the background, logs to `~/.relay/takeover.log` and shows a notification. It does nothing in projects that aren't set up, or while a relay run holds the lock. The hook returns at once, so it never blocks Claude Code. Limits: Codex only sees the last message (plus the project's notes and the unfinished changes), and Codex has no equivalent hook, so this works from Claude to Codex only. `relay autoswitch off` removes it.
 
 ### Under the hood
 

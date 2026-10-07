@@ -19,6 +19,8 @@ Installed with install.sh, the same commands are just `relay init`, `relay run .
   relay.py teach [--remove]                     add (or remove) a short note about the relay to Claude's and Codex's
                                                 general instructions, so "set up the relay" works in any project
   relay.py uninstall                            remove what install.sh added
+  relay.py autoswitch on|off                    when a normal Claude Code chat hits its usage limit, start Codex
+                                                on the same request in the background (a Claude Code hook)
   relay.py status                               who holds the lock, and the current baton
   relay.py pass --to codex --task "..." --note "..."   hand off by hand at the end of an interactive chat
 
@@ -893,7 +895,8 @@ The `relay` command is installed ({command}). It lets Codex and Claude share a c
   a while, so run it in the background if you can. If it stops with questions for the user, read .relay/questions.json,
   ask each (the suggested answer first, with its reason), then run `relay answer --answer "..."` once per question.
 - It runs both apps, so a sandbox without network access will block it: ask the user to approve running it outside.
-- `relay status` shows where things stand.
+- `relay status` shows where things stand. If it shows a run in progress in this project (Codex may have taken over
+  after you hit a usage limit), don't edit files until it has finished: read .relay/baton.md first.
 {TEACH_MARK[1]}'''
 
 def teach(remove=False):
@@ -909,6 +912,93 @@ def teach(remove=False):
     if not remove: print('Claude and Codex now know about the relay in every project. Undo with: relay teach --remove')
     return 0
 
+# ---- when a normal Claude chat hits its limit -------------------------------------------------------------------
+TAKEOVER_LOG = Path.home()/'.relay'/'takeover.log'
+HOOK_TAG = 'takeover --from-claude-hook'
+
+def claude_settings():
+    return Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home()/'.claude')/'settings.json'
+
+def autoswitch(state):
+    """Add or remove the Claude Code StopFailure hook that runs `relay takeover` when a chat hits a usage limit."""
+    path = claude_settings()
+    settings = json.loads(path.read_text()) if path.exists() else {}
+    hooks = settings.setdefault('hooks', {})
+    kept = [entry for entry in hooks.get('StopFailure', []) if not any(HOOK_TAG in h.get('command', '') for h in entry.get('hooks', []))]
+    on = any(HOOK_TAG in h.get('command', '') for entry in hooks.get('StopFailure', []) for h in entry.get('hooks', []))
+    if state == 'status': print('Autoswitch is', 'on' if on else 'off'); return 0
+    command = f'"{installed()["command"]}"' if installed().get('command') else f'python3 "{RELAY_SCRIPT}"'
+    if state == 'on':
+        kept.append({'hooks':  # no matcher: every API stop reaches takeover, which checks the message itself
+                      [{'type': 'command', 'command': f'{command} {HOOK_TAG}', 'timeout': 30}]})
+    if kept: hooks['StopFailure'] = kept
+    else: hooks.pop('StopFailure', None)
+    if not hooks: settings.pop('hooks')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + '\n')
+    print('Autoswitch is on: when a Claude Code chat hits its usage limit in a project set up for the relay, Codex carries on '
+          'with your last request. Turn it off with: relay autoswitch off' if state == 'on' else 'Autoswitch is off.')
+    return 0
+
+def last_request(transcript):
+    """The user's most recent typed message in a Claude Code transcript (JSON lines)."""
+    request = ''
+    try: lines = Path(transcript).read_text(errors='replace').splitlines()
+    except OSError: return ''
+    for line in lines:
+        try: entry = json.loads(line)
+        except ValueError: continue
+        if entry.get('type') != 'user' or entry.get('isMeta'): continue
+        content = (entry.get('message') or {}).get('content')
+        parts = [content] if isinstance(content, str) else [c.get('text', '') for c in content or [] if isinstance(c, dict) and c.get('type') == 'text']
+        text = re.sub(r'<system-reminder>.*?</system-reminder>', '', '\n'.join(parts), flags=re.S).strip()
+        if text and not text.startswith('<'): request = text
+    return request[:2000]
+
+def takeover(event):
+    """Called by Claude Code's StopFailure hook. If the chat stopped on a usage limit in a relay project, hand the user's
+    last request to Codex in the background. Never blocks: Claude Code waits for this to finish."""
+    def note(line):
+        TAKEOVER_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with TAKEOVER_LOG.open('a') as f: f.write(f'{now()} {line}\n')
+    message = event.get('last_assistant_message') or event.get('error_details') or ''
+    if event.get('error') != 'rate_limit' and not OUT_OF_USAGE.search(message): return 0
+    cwd = Path(event.get('cwd') or '.')
+    root = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=cwd, capture_output=True, text=True)
+    if root.returncode or not (Path(root.stdout.strip())/'relay.json').exists():
+        note(f'Claude hit a usage limit in {cwd}, which is not set up for the relay: nothing started'); return 0
+    project = Path(root.stdout.strip())
+    common = subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], cwd=project, text=True).strip()
+    if ((project/common).resolve()/project_config(project)['lock_name']).exists():
+        note(f'Claude hit a usage limit in {project}, but a relay run already holds the lock: nothing started'); return 0
+    task = last_request(event.get('transcript_path', ''))
+    if not task: note(f'Claude hit a usage limit in {project}, but its last request could not be read: nothing started'); return 0
+    state = project/'.relay'; state.mkdir(exist_ok=True)
+    baton = state/'baton.md'
+    if baton.exists(): shutil.copy2(baton, state/'baton-before-takeover.md')
+    baton.write_text(f'# Relay baton\n\nStatus: continue\nFrom: claude\nTo: codex\nTask: {" ".join(task.split())}\nUpdated: {now()}\n\n'
+                     f"## What I did\nClaude was working on this request in a normal chat and ran out of usage ({message.strip()[:200]}). "
+                     "It did not write a hand-off: its unfinished changes, if any, are in the working tree.\n\n"
+                     "## What's next\nCheck git status and git diff to see what Claude already changed, then finish the request "
+                     "and update this note.\n\n## Watch out for\nThe request above is the user's last message to Claude; earlier "
+                     "messages in that chat are not here. If it depends on them and the notes don't explain, ask under Questions for "
+                     "you.\n\n## Decisions and why\nNone yet.\n\n## Tried, didn't work\nNothing yet.\n")
+    out = (state/'takeover.out').open('a')
+    subprocess.Popen([sys.executable, str(RELAY_SCRIPT), 'run', '--start', 'codex'], cwd=project, stdin=subprocess.DEVNULL,
+                     stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+                     env={**os.environ, 'RELAY_COMMAND': RELAY_CMD})
+    note(f'Claude hit a usage limit in {project}; Codex is carrying on with: {task[:120]}')
+    if shutil.which('osascript'):
+        subprocess.run(['osascript', '-e', f'display notification "Codex is carrying on in {project.name}" with title "Claude hit its limit"'],
+                       capture_output=True, timeout=10)
+    return 0
+
+def project_config(project):
+    config = dict(DEFAULTS)
+    path = project/'relay.json'
+    if path.exists(): config.update(json.loads(path.read_text()))
+    return config
+
 def uninstall(yes=False):
     info = installed()
     if not info: raise SystemExit('Nothing to uninstall: the relay was not installed with install.sh (just delete relay.py).')
@@ -916,6 +1006,7 @@ def uninstall(yes=False):
         if not sys.stdin.isatty(): raise SystemExit('To remove the relay command and its notes, run: relay uninstall --yes')
         if input('Remove the relay command and its notes in Claude and Codex? Your projects are not touched. [y/N] ').strip().lower() != 'y': return 1
     teach(remove=True)
+    autoswitch('off')
     command = Path(info.get('command', ''))
     if command.is_file() and 'codex-claude-relay' in command.read_text(): command.unlink(); print('removed', command)
     for profile in info.get('profiles', []):
@@ -946,11 +1037,20 @@ def main(argv=None):
     r.add_argument('--from-round', type=int, default=1, help=argparse.SUPPRESS)  # set when a run carries on after your answers
     sub.add_parser('look')
     t = sub.add_parser('teach'); t.add_argument('--remove', action='store_true')
+    w = sub.add_parser('autoswitch'); w.add_argument('state', choices=['on', 'off', 'status'])
+    k = sub.add_parser('takeover'); k.add_argument('--from-claude-hook', action='store_true', required=True)
     u = sub.add_parser('uninstall'); u.add_argument('--yes', action='store_true')
     sub.add_parser('version')
     a = ap.parse_args(argv)
     if a.action == 'version': print('codex-claude-relay', VERSION); return 0
     if a.action == 'teach': return teach(a.remove)
+    if a.action == 'autoswitch': return autoswitch(a.state)
+    if a.action == 'takeover':
+        try: return takeover(json.loads(sys.stdin.read() or '{}'))
+        except Exception as error:  # a hook must never break the user's session
+            TAKEOVER_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with TAKEOVER_LOG.open('a') as f: f.write(f'{now()} takeover failed: {error!r}\n')
+            return 0
     if a.action == 'uninstall': return uninstall(a.yes)
     if not IN_REPO:
         here = Path.cwd()

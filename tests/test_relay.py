@@ -1,7 +1,7 @@
 """End-to-end tests: the real relay runs in a throwaway Git repository against stand-in codex and claude programs.
 No model calls. Run: python3 -m unittest discover tests
 """
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import json, os, shutil, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -389,6 +389,77 @@ class Relay(unittest.TestCase):
         self.assertIn('First note', note)
         self.assertIn('Sam says: use the short version', note)
         self.assertIn('To: claude', note)
+
+
+class Takeover(unittest.TestCase):
+    """A normal Claude Code chat hits its usage limit: the StopFailure hook runs `relay takeover`."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.work = self.tmp/'work'; self.work.mkdir()
+        bin_dir = self.tmp/'bin'; bin_dir.mkdir()
+        for name in ('codex', 'claude'): (bin_dir/name).symlink_to(REPO/'tests'/'fake_agent.py')
+        git = lambda *a: subprocess.run(['git', *a], cwd=self.work, check=True, capture_output=True)
+        git('init', '-q', '-b', 'main'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test')
+        (self.work/'README.md').write_text('# Test\n'); (self.work/'relay.json').write_text('{}')
+        git('add', '.'); git('commit', '-qm', 'start')
+        self.home = self.tmp/'home'; self.home.mkdir()
+        self.env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}', 'HOME': str(self.home), 'FAKE_STATE': str(self.tmp/'state'),
+                    'FAKE_PLAN': 'finish', 'RELAY_REPO': str(REPO), 'CLAUDE_CONFIG_DIR': str(self.home/'.claude')}
+        self.transcript = self.tmp/'chat.jsonl'
+        self.transcript.write_text('\n'.join(json.dumps(line) for line in [
+            {'type': 'user', 'message': {'role': 'user', 'content': 'Make the footer calmer'}},
+            {'type': 'assistant', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'On it.'}]}},
+            {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ok'}]}},
+            {'type': 'user', 'isMeta': True, 'message': {'role': 'user', 'content': 'meta'}},
+            {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': '<system-reminder>x</system-reminder>Also soften the header'}]}},
+        ]) + '\n')
+
+    def hook(self, cwd=None, **event):
+        event = {'session_id': 's', 'transcript_path': str(self.transcript), 'cwd': str(cwd or self.work), 'hook_event_name': 'StopFailure',
+                 'error': 'rate_limit', 'last_assistant_message': "You've hit your weekly limit · resets 3pm", **event}
+        return subprocess.run([sys.executable, str(REPO/'relay.py'), 'takeover', '--from-claude-hook'], cwd=self.tmp, env=self.env,
+                              input=json.dumps(event), capture_output=True, text=True, timeout=30)
+
+    def wait_for_log(self, words):
+        log = self.work/'.relay/log.md'
+        for _ in range(100):
+            if log.exists() and words in log.read_text(): return log.read_text()
+            time.sleep(0.2)
+        self.fail(f'{words!r} never appeared in the relay log')
+
+    def takeover_log(self): return (self.home/'.relay/takeover.log').read_text()
+
+    def test_codex_carries_on_with_the_last_request(self):
+        self.assertEqual(self.hook().returncode, 0)
+        self.wait_for_log('task done')
+        self.assertIn('Task: Also soften the header', (self.work/'.relay/baton.md').read_text())
+        self.assertIn('Codex is carrying on with: Also soften the header', self.takeover_log())
+
+    def test_other_errors_are_ignored(self):
+        self.hook(error='overloaded', last_assistant_message='API Error: Overloaded')
+        self.assertFalse((self.work/'.relay').exists())
+
+    def test_a_project_without_the_relay_is_left_alone(self):
+        (self.work/'relay.json').unlink()
+        self.hook()
+        self.assertFalse((self.work/'.relay').exists())
+        self.assertIn('not set up for the relay', self.takeover_log())
+
+    def test_nothing_starts_while_a_relay_run_holds_the_lock(self):
+        (self.work/'.git/relay-writer-lock').mkdir()
+        self.hook()
+        self.assertIn('already holds the lock', self.takeover_log())
+
+    def test_autoswitch_adds_one_hook_and_keeps_your_settings(self):
+        (self.home/'.claude').mkdir(); (self.home/'.claude/settings.json').write_text(json.dumps({'theme': 'dark'}))
+        run = lambda *a: subprocess.run([sys.executable, str(REPO/'relay.py'), 'autoswitch', *a], cwd=self.tmp, env=self.env, capture_output=True, text=True)
+        run('on'); run('on')
+        settings = json.loads((self.home/'.claude/settings.json').read_text())
+        self.assertEqual(settings['theme'], 'dark')
+        self.assertEqual(len(settings['hooks']['StopFailure']), 1)
+        self.assertIn('takeover --from-claude-hook', settings['hooks']['StopFailure'][0]['hooks'][0]['command'])
+        run('off')
+        self.assertEqual(json.loads((self.home/'.claude/settings.json').read_text()), {'theme': 'dark'})
 
 
 class Install(unittest.TestCase):
