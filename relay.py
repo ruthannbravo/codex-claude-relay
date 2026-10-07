@@ -100,6 +100,19 @@ def write_baton(task, sender, to, status, did, next_step, watch=''):
                      f"## What I did\n{did}\n\n## What's next\n{next_step}\n\n## Watch out for\n{watch or 'Nothing new.'}\n\n"
                      "## Decisions and why\nNone yet.\n\n## Tried, didn't work\nNothing yet.\n")
 
+def record_decision(text):
+    """Add a [user] decision under Decisions and why. User decisions are final for both assistants."""
+    note = BATON.read_text()
+    line = f'- [user] {text.strip()} ({now()})'
+    if '## Decisions and why' in note:
+        head, rest = note.split('## Decisions and why', 1)
+        body, sep, tail = rest.partition('\n## ')
+        body = body.replace('\nNone yet.', '')
+        note = f"{head}## Decisions and why{body.rstrip()}\n{line}\n" + (f'\n## {tail}' if sep else '')
+    else:
+        note = note.rstrip('\n') + f'\n\n## Decisions and why\n{line}\n'
+    BATON.write_text(note)
+
 def add_to_baton(to, status, heading, text):
     """Point the existing note at someone and append a section, keeping everything already in it."""
     note = re.sub(r'^Status:.*$', f'Status: {status}', BATON.read_text(), count=1, flags=re.M)
@@ -157,6 +170,10 @@ Task: {task}
 
 Keep everything already under Decisions and why and Tried, didn't work: copy it forward and add to it, never
 drop it. That is how the next assistant knows what was chosen on purpose and what not to try again.
+Start each decision with who made it: [user] or [codex]/[claude]. [user] decisions are final. An assistant's
+decision may be challenged, but only with evidence: say what you found, change it, and keep the old line
+marked "(replaced: ...)". Mark every claim about the work as (checked: how you checked it) or (assumed). Before
+relying on anything (assumed) from an earlier note, check it yourself; earlier notes are leads, not facts.
 Use Status: done only when the whole task is finished and checked. Use Status: ask-user when the next step is a
 decision that belongs to the user, and write the question under What's next. Otherwise use continue."""
 
@@ -196,7 +213,20 @@ End by rewriting {rel(BATON)} in this shape, including the Calls used line:
 {baton_shape(agent, task, 'Calls used: <live model calls you made this round>' + chr(10))}
 Add a ## Results section with the real outputs."""
 
-def checker_prompt(agent, task, rnd):
+def blind_prompt(agent, task, rnd):
+    criteria = ', '.join(CONFIG['review_criteria'] or CONFIG['notes']) or 'the README'
+    return f"""You are {agent.capitalize()}, reviewing round {rnd} of a make-and-check relay on this repository. BLIND REVIEW.
+Task: {task}
+
+Another assistant has just worked on this task. You will not see its report yet, on purpose: form your own view
+first, so you are not steered by how it framed things. Do not open anything in .relay/ and do not read its
+commit messages for its explanations; look only at the work itself: git status, git diff, git log for which files
+changed, and the files. You are read-only: do not edit files or make model calls.
+
+Judge the work against the task and the project's own criteria ({criteria}). List what is right, what is wrong or
+missing, and anything you are unsure about, each with evidence (file and line). Do not give a verdict."""
+
+def checker_prompt(agent, task, rnd, blind_findings=None):
     criteria = ', '.join(CONFIG['review_criteria'] or CONFIG['notes']) or 'the README'
     return f"""You are {agent.capitalize()}, the independent reviewer in round {rnd} of a make-and-check relay on this repository.
 Task: {task}
@@ -204,12 +234,24 @@ Task: {task}
 You are read-only: do not edit files or make model calls. Read {rel(BATON)} (the maker's report), then check the
 actual work: git log, git diff, the files and any saved results it names. Judge it against the task and the
 project's own criteria ({criteria}). Verify claims yourself rather than trusting the report; quote evidence.
-
+{compare(blind_findings)}
 Your final message is saved as the review. Write the findings first (most important first, each with evidence and
 the correction needed). End with exactly one of these as the last line, and nothing after it:
 "Verdict: approve", "Verdict: revise" or "Verdict: ask-user".
 Use approve only when the task is met and checked. Use ask-user when the remaining question is a judgement that
 belongs to the user, and state the question."""
+
+def compare(blind_findings):
+    if not blind_findings: return ''
+    return f"""
+Before reading the report, you reviewed the work blind and wrote this:
+
+{blind_findings}
+
+Now compare. List separately: problems only you found, problems only the maker reported, and anything you
+disagree on. Re-check each against the code before deciding; agreement between two assistants is not evidence.
+Do not drop a blind finding just because the report doesn't mention it.
+"""
 
 # ---- running one assistant -------------------------------------------------------------------------------------
 def command_for(agent, prompt, last_message, live_calls=False, read_only=False):
@@ -322,7 +364,20 @@ def hand_over(task, agent, before, limit):
     return None
 
 # ---- mode 2: make and check ------------------------------------------------------------------------------------
-def run_check(task, rounds, budget, maker, dry_run):
+def blind_session(checker, task, rnd):
+    """Review the work with the maker's note moved out of the repository, so it can't steer the first look."""
+    hidden = Path(tempfile.mkdtemp())/'baton.md'
+    BATON.replace(hidden)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            last = Path(tmp)/'last.txt'
+            code, transcript = session(checker, command_for(checker, blind_prompt(checker, task, rnd), str(last), read_only=True), f'round-{rnd}-blind', TURN_TIMEOUT)
+            text = (last.read_text() if last.exists() and last.read_text().strip() else transcript.read_text(errors='replace')).strip()
+    finally:
+        hidden.replace(BATON)
+    return code, transcript, text
+
+def run_check(task, rounds, budget, maker, dry_run, blind=True):
     if not 1 <= rounds <= MAX_ROUNDS: raise SystemExit(f'--check must be between 1 and {MAX_ROUNDS}')
     if budget < 0: raise SystemExit('--calls cannot be negative')
     if budget and not CONFIG['live_command']: raise SystemExit('--calls needs "live_command" in relay.json (the only command allowed to make live calls)')
@@ -330,7 +385,9 @@ def run_check(task, rounds, budget, maker, dry_run):
     task, _ = pick_up(task, maker)
     checker, review, used = other(maker), '', 0
     if dry_run:
-        print(f'--- round 1 maker: {maker}\n{maker_prompt(maker, task, 1, rounds, budget, "")}\n\n--- round 1 checker: {checker} (read-only)\n{checker_prompt(checker, task, 1)}\n')
+        print(f'--- round 1 maker: {maker}\n{maker_prompt(maker, task, 1, rounds, budget, "")}\n')
+        if blind: print(f'--- round 1 blind review: {checker} (read-only, report hidden)\n{blind_prompt(checker, task, 1)}\n')
+        print(f'--- round 1 checker: {checker} (read-only)\n{checker_prompt(checker, task, 1, "<the blind findings>" if blind else None)}\n')
         print('Dry run: no model calls, nothing claimed or logged.'); return 0
     branch = git('branch', '--show-current')
     log(f'relay started (make and check): {maker} makes, {checker} checks, up to {rounds} rounds, {budget} live calls, branch {branch}, task: {task}')
@@ -355,10 +412,17 @@ def run_check(task, rounds, budget, maker, dry_run):
         used = measured
         log(f'round {rnd}: {maker} made (calls {reported[1]}, total {used} of {budget}; HEAD {git("rev-parse", "--short", "HEAD")})')
         if baton['status'] == 'ask-user': return stop(f"the user needs to decide; see What's next in {rel(BATON)}")
+        blind_findings = None
+        if blind:
+            print(f'Round {rnd}: {checker.capitalize()} reviewing blind… ', end='', flush=True)
+            code, transcript, blind_findings = blind_session(checker, task, rnd)
+            if code is None: print('stopped'); return stop(f'round {rnd}: the blind review ran past {TURN_TIMEOUT//60} minutes', ok=False)
+            if code: print('failed'); return stop(f'round {rnd}: the blind review stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
+            print('done', flush=True)
         with tempfile.TemporaryDirectory() as tmp:
             last = Path(tmp)/'last.txt'
-            print(f'Round {rnd}: {checker.capitalize()} checking… ', end='', flush=True)
-            code, transcript = session(checker, command_for(checker, checker_prompt(checker, task, rnd), str(last), read_only=True), f'round-{rnd}-check', TURN_TIMEOUT)
+            print(f'Round {rnd}: {checker.capitalize()} comparing with the report… ' if blind else f'Round {rnd}: {checker.capitalize()} checking… ', end='', flush=True)
+            code, transcript = session(checker, command_for(checker, checker_prompt(checker, task, rnd, blind_findings), str(last), read_only=True), f'round-{rnd}-check', TURN_TIMEOUT)
             text = (last.read_text() if last.exists() and last.read_text().strip() else transcript.read_text(errors='replace')).strip()
         if code is None: print('stopped'); return stop(f'round {rnd}: the review ran past {TURN_TIMEOUT//60} minutes', ok=False)
         if code: print('failed'); return stop(f'round {rnd}: the review stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
@@ -366,7 +430,8 @@ def run_check(task, rounds, budget, maker, dry_run):
         print(verdict or 'no verdict', flush=True)
         REVIEWS.mkdir(parents=True, exist_ok=True)
         saved = REVIEWS/f'{unique()}-round-{rnd}-{checker}.md'
-        saved.write_text(f'# Round {rnd} review by {checker.capitalize()}\n\nTask: {task}\n\n{text}\n')
+        blind_part = f'## Blind review (before reading the report)\n\n{blind_findings}\n\n## Review after comparing\n\n' if blind_findings else ''
+        saved.write_text(f'# Round {rnd} review by {checker.capitalize()}\n\nTask: {task}\n\n{blind_part}{text}\n')
         status = {'approve': 'done', 'revise': 'continue'}.get(verdict, 'ask-user')
         updated = re.sub(r'^Status:.*$', f'Status: {status}', BATON.read_text(), count=1, flags=re.M)
         updated = re.sub(r'^To:.*$', f'To: {maker}', updated, count=1, flags=re.M)
@@ -468,9 +533,11 @@ def main(argv=None):
     p = sub.add_parser('pass'); p.add_argument('--to', choices=AGENTS, required=True); p.add_argument('--note', required=True)
     p.add_argument('--next', default='Read the note above and continue the task.'); p.add_argument('--task')
     p.add_argument('--status', choices=STATUSES, default='continue')
+    p.add_argument('--decision', action='append', default=[], metavar='TEXT', help='record a final decision of yours, e.g. --decision "Keep the short wording"')
     r = sub.add_parser('run'); r.add_argument('--task'); r.add_argument('--start', choices=AGENTS, default='codex')
     r.add_argument('--take-turns', type=int, metavar='N'); r.add_argument('--check', type=int, metavar='ROUNDS')
     r.add_argument('--calls', type=int, default=0, metavar='N'); r.add_argument('--maker', choices=AGENTS, default='claude')
+    r.add_argument('--no-blind', action='store_true', help='make and check: skip the blind first look (cheaper, more anchoring)')
     r.add_argument('--dry-run', action='store_true')
     a = ap.parse_args(argv)
     if a.action == 'init': return init()
@@ -483,10 +550,11 @@ def main(argv=None):
         if not task: raise SystemExit('The first hand-off needs --task')
         if baton and baton['task'] == task: add_to_baton(a.to, a.status, f'Note added by hand ({now()})', f'{a.note}\n\nNext: {a.next}')
         else: write_baton(task, other(a.to), a.to, a.status, a.note, a.next)
+        for d in a.decision: record_decision(d)
         log(f'hand-off by hand: → {a.to} ({a.status})')
         print(f'Baton passed to {a.to}.'); return 0
     try:
-        if a.check is not None: return run_check(a.task, a.check, a.calls, a.maker, a.dry_run)
+        if a.check is not None: return run_check(a.task, a.check, a.calls, a.maker, a.dry_run, blind=not a.no_blind)
         if a.take_turns is not None: return run_turns(a.task, a.take_turns, a.start, a.dry_run)
         return run_backup(a.task, a.start, a.dry_run)
     except (RuntimeError, subprocess.CalledProcessError) as error:

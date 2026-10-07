@@ -3,7 +3,8 @@
 
 Linked as `codex` and `claude` on PATH. $FAKE_PLAN is a comma list of behaviours, one per session, consumed in
 order (the call count lives in $FAKE_STATE): work-then-out, out, finish, ask, continue, error, make<N>
-(reserve N ledger calls through budget/relay_budget.py), verdict-<approve|revise|ask-user>.
+(reserve N ledger calls through budget/relay_budget.py), blind (a blind review that reports whether the maker's
+note was visible), verdict-<approve|revise|ask-user>.
 """
 import json, os, re, sys
 from pathlib import Path
@@ -36,6 +37,12 @@ if step.startswith('make'):
         try: reserve_relay_call(); used += 1
         except RuntimeError: break
     baton('continue', f'made a change with {used} calls', f'Calls used: {used}\n'); sys.exit(0)
+if step == 'blind':
+    seen = Path('.relay/baton.md').exists()
+    text = f'Blind finding: the footer link is broken (index.html:12). Report visible during blind look: {seen}'
+    if '-o' in args: Path(args[args.index('-o') + 1]).write_text(text)
+    else: print(text)
+    sys.exit(0)
 if step.startswith('verdict-'):
     text = f'1. A finding with evidence.\nVerdict: {step[8:]}'
     if '-o' in args: Path(args[args.index('-o') + 1]).write_text(text)

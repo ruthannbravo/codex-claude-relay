@@ -84,27 +84,27 @@ class Relay(unittest.TestCase):
 
     def test_check_revise_then_approve_and_reviews_are_committed(self):
         self.configure()
-        self.assertEqual(self.relay(['make2', 'verdict-revise', 'make1', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '3', '--calls', '3'), 0)
+        self.assertEqual(self.relay(['make2', 'blind', 'verdict-revise', 'make1', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '3', '--calls', '3'), 0)
         self.assertIn('approved by codex in round 2; 3 of 3', self.output)
-        self.assertIn('A finding with evidence', self.prompt(2))
+        self.assertIn('A finding with evidence', self.prompt(3))
         commits = subprocess.run(['git', 'log', '--format=%s'], cwd=self.work, text=True, capture_output=True).stdout
         self.assertIn('round 1 review by Codex (revise)', commits)
         self.assertIn('round 2 review by Codex (approve)', commits)
 
     def test_the_ledger_refuses_calls_over_the_budget(self):
         self.configure()
-        self.assertEqual(self.relay(['make5', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1', '--calls', '2'), 0)
+        self.assertEqual(self.relay(['make5', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1', '--calls', '2'), 0)
         self.assertIn('Calls used: 2', self.baton())
         self.assertIn('2 of 2 live calls used', self.output)
 
     def test_the_reviewer_is_read_only(self):
         self.configure()
-        self.relay(['make0', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1')
+        self.relay(['make0', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1')
         self.assertIn('You are read-only', self.prompt(1))
 
     def test_a_review_without_a_verdict_stops(self):
         self.configure()
-        self.assertEqual(self.relay(['make0', 'verdict-maybe'], 'run', '--task', 'Tune', '--check', '1'), 1)
+        self.assertEqual(self.relay(['make0', 'blind', 'verdict-maybe'], 'run', '--task', 'Tune', '--check', '1'), 1)
         self.assertIn('without a verdict', self.output)
 
     def test_calls_need_a_live_command_and_a_claude_maker(self):
@@ -115,8 +115,39 @@ class Relay(unittest.TestCase):
     def test_a_call_count_with_words_after_it_is_accepted(self):
         # Codex wrote "Calls used: 0 live model calls" in a real run; the number is what counts.
         self.configure()
-        self.assertEqual(self.relay(['make0-words', 'verdict-approve'], 'run', '--task', 'Review', '--check', '1'), 0)
+        self.assertEqual(self.relay(['make0-words', 'blind', 'verdict-approve'], 'run', '--task', 'Review', '--check', '1'), 0)
         self.assertIn('approved by codex', self.output)
+
+    # Against groupthink: a blind first look, findings carried into the comparison, tagged decisions
+    def test_the_reviewer_looks_blind_first_with_the_report_hidden(self):
+        self.configure()
+        self.assertEqual(self.relay(['make0', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1'), 0)
+        self.assertIn('BLIND REVIEW', self.prompt(1))
+        self.assertIn('Report visible during blind look: False', self.prompt(2))  # its own blind findings, passed in
+        self.assertIn('problems only you found', self.prompt(2))
+        self.assertTrue((self.work/'.relay/baton.md').exists())  # the note is put back afterwards
+        review = next((self.work/'.relay/reviews').iterdir()).read_text()
+        self.assertIn('## Blind review (before reading the report)', review)
+
+    def test_no_blind_skips_the_extra_look(self):
+        self.configure()
+        self.assertEqual(self.relay(['make0', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1', '--no-blind'), 0)
+        self.assertEqual(self.sessions(), 2)
+        self.assertNotIn('BLIND REVIEW', self.prompt(1))
+
+    def test_assistants_tag_decisions_and_mark_claims(self):
+        self.relay(['finish'], 'run', '--task', 'Tidy')
+        self.assertIn('[user] decisions are final', self.prompt(0))
+        self.assertIn('(assumed)', self.prompt(0))
+
+    def test_a_user_decision_is_recorded_as_final(self):
+        self.relay([], 'pass', '--to', 'codex', '--task', 'Tidy', '--note', 'Started', '--decision', 'Keep the short wording')
+        self.relay([], 'pass', '--to', 'claude', '--note', 'More', '--decision', 'No new colours')
+        note = (self.work/'.relay/baton.md').read_text()
+        decisions = note.split('## Decisions and why', 1)[1].split('\n## ', 1)[0]
+        self.assertIn('- [user] Keep the short wording', decisions)
+        self.assertIn('- [user] No new colours', decisions)
+        self.assertNotIn('None yet.', decisions)
 
     # Take turns
     def test_take_turns_alternates_and_stops_at_the_limit(self):
