@@ -1,0 +1,9 @@
+{
+  "notes": ["AGENTS.md", "README.md"],
+  "checkpoint": "docs/progress.md",
+  "tests": ["npm test --prefix frontend", "python3 -m pytest"],
+  "live_command": "node evals/run.mjs",
+  "review_criteria": ["docs/rubric.md"],
+  "claude_model": "sonnet",
+  "codex_model": null
+}

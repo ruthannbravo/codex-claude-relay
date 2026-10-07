@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Relay Architecture</title><style>
+:root{--bg:#F4EFE6;--ink:#1E1B16;--muted:#6B6255;--rule:#DDD3C2;--card:#FFFDF8;--codex:#2F6F6A;--codex-soft:#E1EDEA;--claude:#C2603A;--claude-soft:#F6E3D9;--you:#3D3A8C;--you-soft:#E6E5F4;--s1:#5B58C2;--s2:#C2603A}
+*{box-sizing:border-box;margin:0;padding:0}html,body{width:1080px;height:1350px;background:var(--bg);color:var(--ink);font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+.page{padding:64px 72px 0;height:100%;display:flex;flex-direction:column}
+.eyebrow{font-size:18px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:60px;font-weight:700;letter-spacing:-.025em;line-height:1.02;margin:14px 0 14px}
+.sub{font-size:24px;line-height:1.4;color:var(--muted)}
+.mono{font-family:"SF Mono",Menlo,monospace}
+.footer{margin-top:auto;border-top:2px solid var(--rule);padding:22px 0 34px;font-size:18px;color:var(--muted);font-weight:600;display:flex;justify-content:space-between}
+
+.box{border:2px solid var(--rule);background:var(--card);border-radius:14px;padding:14px 18px}
+.box h3{font-size:22px;font-weight:700;margin-bottom:4px}.box p{font-size:17px;line-height:1.4;color:#3A352D}
+.box code{font-family:"SF Mono",Menlo,monospace;font-size:15px;background:rgba(0,0,0,.05);padding:1px 5px;border-radius:4px}
+.grid{position:relative;margin-top:36px;height:880px}
+.abs{position:absolute}
+.you{border-color:var(--you);background:var(--you-soft)}.cx{border-color:var(--codex);background:var(--codex-soft)}.cl{border-color:var(--claude);background:var(--claude-soft)}
+.state{border-style:dashed;background:transparent}
+.tag{font-family:"SF Mono",Menlo,monospace;font-size:13px;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px;display:block}
+svg.wires{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+</style></head><body><div class="page">
+<div class="eyebrow">The Relay · under the hood</div>
+<h1>One script, two CLIs,<br>a lock, a note and a ledger</h1>
+<p class="sub">How <span class="mono">relay.py</span> keeps Codex and Claude on one task without them stepping on each other.</p>
+<div class="grid">
+<svg class="wires" viewBox="0 0 936 880"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10z" fill="#6B6255"/></marker></defs>
+<g stroke="#6B6255" stroke-width="2.2" fill="none" marker-end="url(#a)">
+<path d="M468 92 V128"/>
+<path d="M330 262 C250 300 200 300 180 352"/><path d="M606 262 C686 300 736 300 756 352"/>
+<path d="M180 520 C180 580 330 600 400 628"/><path d="M756 520 C756 580 606 600 536 628"/>
+</g>
+<g stroke="#6B6255" stroke-width="2" stroke-dasharray="6 6" fill="none"><path d="M620 196 H700"/><path d="M316 196 H236"/></g>
+</svg>
+<div class="box you abs" style="left:248px;top:0;width:440px"><span class="tag">you</span><h3>relay.py run --task "…"</h3><p>pick a mode: backup · <code>--check</code> · <code>--take-turns</code></p></div>
+<div class="box abs" style="left:316px;top:130px;width:304px;border-color:#1E1B16"><span class="tag">relay.py</span><h3>Runs one session at a time</h3><p>claims the lock, starts a CLI, saves its output, reads the note, decides who's next or stops</p></div>
+<div class="box state abs" style="left:704px;top:150px;width:232px"><span class="tag">lock</span><p><code>.git/relay-writer-lock</code><br>one editor at a time</p></div>
+<div class="box state abs" style="left:0;top:150px;width:232px"><span class="tag">ledger</span><p><code>RELAY_CALL_BUDGET</code><br>one slot per live AI call, atomic <code>mkdir</code></p></div>
+<div class="box cx abs" style="left:0;top:352px;width:400px"><span class="tag">codex exec</span><h3>Codex</h3><p>workspace-write sandbox to work, read-only to review · <code>OPENAI_API_KEY</code> removed, ChatGPT sign-in required</p></div>
+<div class="box cl abs" style="left:536px;top:352px;width:400px"><span class="tag">claude -p</span><h3>Claude</h3><p>allow-listed tools only; test commands from <code>relay.json</code> · <code>ANTHROPIC_*</code> removed, claude.ai sign-in required</p></div>
+<div class="box state abs" style="left:240px;top:628px;width:456px;border-color:var(--ink);border-style:solid"><span class="tag">.relay/baton.md · the hand-off note</span><p class="mono" style="font-size:15px;line-height:1.55">Status: continue | done | ask-user<br>From: codex · To: claude · Task: …<br>Calls used: 2<br>## What I did · ## What's next · ## Watch out for</p></div>
+<div class="abs" style="left:0;top:800px;width:936px;display:flex;gap:14px;font-size:17px;color:var(--muted)"><span class="mono">.relay/log.md</span> one line per event ·<span class="mono">transcripts/</span> full output ·<span class="mono">reviews/</span> committed automatically</div>
+</div>
+</div></body></html>

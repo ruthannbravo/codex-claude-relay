@@ -1,0 +1,79 @@
+# Codex ⇄ Claude relay
+
+A small Python script that lets two AI coding assistants, OpenAI's **Codex** and Anthropic's **Claude**, work on the same task in the same Git repository. They take turns through a written hand-off note, so neither one starts from scratch and you don't have to re-explain the task.
+
+![Backup mode: when one runs out of usage, the other carries on](docs/images/backup.png)
+
+## Three modes
+
+| Mode | Command | What happens | Stops when |
+| --- | --- | --- | --- |
+| **Backup** (default) | `relay.py run --task "..."` | One assistant works through the whole task, updating the note as it goes. If it runs out of usage, the relay records that and starts the other one, which picks up from the note. `--start claude` swaps who goes first. | Done · needs you · both out of usage (it prints both reset times) · any other error |
+| **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round Claude does the work and may run live tests within the call budget. Codex then reviews it read-only and ends with approve, revise or ask-user. "Revise" goes back to Claude with the review. | Approved · needs you · round limit (1–5) · call budget exceeded or misreported · any error |
+| **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · needs you · turn limit (1–8) · any error |
+
+Plus `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
+
+![Make and check](docs/images/make-and-check.png)
+
+## How it works
+
+![Under the hood](docs/images/architecture.png)
+
+- **One editor at a time.** Every session claims a lock in the Git directory (`.git/relay-writer-lock`). If anyone else holds it, the relay refuses to start.
+- **The hand-off note.** `.relay/baton.md` says what was done, what's next and what to watch out for. Its `Status:` line (`continue`, `done` or `ask-user`) decides whether the relay continues.
+- **The call ledger.** Every session gets a `RELAY_CALL_BUDGET` directory. Your test runner calls `reserveRelayCall()` (Node) or `reserve_relay_call()` (Python) from [`budget/`](budget/) before each live model call. Each call takes one slot with an atomic `mkdir`, so repeated and parallel runs share one cap. Outside make and check the budget is zero. In make and check the relay also checks the maker's reported `Calls used:` against the ledger and stops if they disagree.
+- **Usage-limit detection.** When a session ends, the relay looks for a usage-limit message in its last few lines only, so text the assistant read earlier can't trigger a switch.
+- **Receipts.** The terminal shows one line per step. Everything each assistant printed goes to `.relay/transcripts/`, `.relay/log.md` keeps a one-line history, and each make-and-check review is committed on its own.
+
+![What you see](docs/images/terminal.png)
+
+## Set up
+
+You need Python 3.9+, Git, and both CLIs signed in with their subscriptions: [Codex CLI](https://github.com/openai/codex) (`codex login`, ChatGPT sign-in) and [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`, claude.ai sign-in).
+
+```sh
+curl -O https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/relay.py
+python3 relay.py run --task "Describe the job" --dry-run
+```
+
+Optionally add `relay.json` at your repository root (see [`relay.example.json`](relay.example.json)):
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `notes` | Files each assistant reads first | `AGENTS.md`, `CLAUDE.md`, `README.md` (those that exist) |
+| `checkpoint` | Progress file to keep up to date | none |
+| `tests` | Test commands; Claude is allowed to run exactly these | none |
+| `live_command` | The only command allowed to make live model calls (needed for `--calls`) | none |
+| `review_criteria` | Files the reviewer judges against | the `notes` |
+| `claude_model` / `codex_model` | Model for each CLI | `sonnet` / the CLI's default |
+
+Add `.relay/transcripts/` to your `.gitignore`.
+
+## Guardrails
+
+- **Subscriptions only.** Claude runs with `ANTHROPIC_*` and provider overrides removed and must be signed in with claude.ai. Codex runs with `OPENAI_API_KEY` removed and must be signed in with ChatGPT. There is no API-key fallback.
+- **It always ends.** Nothing retries, loops forever or runs on a schedule. Backup mode uses at most one session of each assistant per run.
+- **Reviewers can't edit.** Codex reviews in its read-only sandbox, and Claude reviews with read-only tools.
+- **No publishing.** Assistants are told never to push, and the relay stops if one switches branch.
+- **Know the limits.** The ledger guards test runners that call it. It isn't a sandbox against deliberate changes to code or environment. Codex's workspace-write sandbox usually can't make Git commits, so it leaves changes for the next assistant and says so in the note.
+
+## Results so far
+
+![Real results](docs/images/scores.png)
+
+Built while improving a customer-service AI prototype. Make and check was run live twice: once on one test case (2 of 2 calls), then on two hard test cases three times each (12 of 12 calls). All seven results scored 100, and Codex re-checked every score itself before approving. Take turns was also run live. Backup mode is covered by the end-to-end tests, but a real usage-limit hand-over hasn't happened yet. If you see one, the exact limit message in `.relay/transcripts/` is the useful thing to report.
+
+## Tests
+
+```sh
+python3 -m unittest discover tests
+```
+
+The tests run the real relay end to end in a throwaway Git repository against stand-in `codex` and `claude` programs ([`tests/fake_agent.py`](tests/fake_agent.py)), with no model calls.
+
+![What you can use it for](docs/images/uses.png)
+
+## License
+
+MIT

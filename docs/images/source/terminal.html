@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Relay Terminal</title><style>
+:root{--bg:#F4EFE6;--ink:#1E1B16;--muted:#6B6255;--rule:#DDD3C2;--card:#FFFDF8;--codex:#2F6F6A;--codex-soft:#E1EDEA;--claude:#C2603A;--claude-soft:#F6E3D9;--you:#3D3A8C;--you-soft:#E6E5F4;--s1:#5B58C2;--s2:#C2603A}
+*{box-sizing:border-box;margin:0;padding:0}html,body{width:1080px;height:1350px;background:var(--bg);color:var(--ink);font-family:"Avenir Next",Avenir,"Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+.page{padding:64px 72px 0;height:100%;display:flex;flex-direction:column}
+.eyebrow{font-size:18px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:60px;font-weight:700;letter-spacing:-.025em;line-height:1.02;margin:14px 0 14px}
+.sub{font-size:24px;line-height:1.4;color:var(--muted)}
+.mono{font-family:"SF Mono",Menlo,monospace}
+.footer{margin-top:auto;border-top:2px solid var(--rule);padding:22px 0 34px;font-size:18px;color:var(--muted);font-weight:600;display:flex;justify-content:space-between}
+.term{margin-top:34px;background:#1E1B16;border-radius:18px;padding:26px 30px;color:#EFE6D2;font-family:"SF Mono",Menlo,monospace;font-size:19px;line-height:1.6}
+.term .p{color:#A89B82}.term .ok{color:#8FC9A8}.term .warn{color:#E8A87C}.term .dim{color:#7D7262}.term .h{color:#C9B8E8}
+.cap{font-size:18px;color:var(--muted);margin:18px 4px 0;line-height:1.4}</style></head><body><div class="page"><div class="eyebrow">The Relay · what you actually see</div>
+<h1>Quiet terminal, full receipts</h1>
+<p class="sub">One line per step. Everything the assistants did is saved to a log, and each review is committed.</p>
+<div class="term"><span class="p">$</span> relay.py run --task "Check CC03/CC05 consistency" --check 2 --calls 12<br>
+Round 1: Claude working… <span class="ok">done</span><br>
+Round 1: Codex checking… <span class="ok">approve</span><br>
+<span class="ok">Relay stopped: approved by codex in round 1; 12 of 12 live calls used</span></div>
+<p class="cap">A real run (task text shortened): Claude ran six tests within a 12-call budget; Codex re-scored all six itself before approving.</p>
+<div class="term" style="margin-top:22px"><span class="p">$</span> relay.py run --task "Tidy the notes"<br>
+Codex working on the task… <span class="warn">ran out of usage</span><br>
+Handing the task to Claude.<br>
+Claude working on the task… <span class="ok">finished</span><br>
+<span class="ok">Relay stopped: task done</span></div>
+<p class="cap">Backup mode, from the end-to-end test suite (stand-in CLIs, no AI calls): Claude reads Codex's note and carries on.</p>
+<div class="term" style="margin-top:22px"><span class="p">$</span> git log --oneline<br>
+<span class="h">b5260b5</span> Relay: round 2 review by Codex (approve)<br>
+<span class="h">01b8ed2</span> Relay: round 1 review by Codex (revise)<br>
+<span class="p">$</span> cat .relay/log.md | tail -2<br>
+<span class="dim">- round 2: claude made (calls 0, total 1 of 1)</span><br>
+<span class="dim">- relay stopped: approved by codex in round 2; 1 of 1 live calls used</span></div>
+<p class="cap">Every review is committed on its own, and the log keeps a running count against the call budget (end-to-end test run).</p></div></body></html>
