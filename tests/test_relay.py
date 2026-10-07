@@ -37,6 +37,15 @@ class Relay(unittest.TestCase):
         self.assertIn('task done', self.output)
         self.assertFalse(self.locked())
 
+    def test_an_assistant_never_waits_for_typed_input(self):
+        # Started from a script, the relay's own input can be an open pipe that never ends; codex exec would wait on it forever.
+        read_end, write_end = os.pipe(); self.addCleanup(os.close, write_end)
+        try:
+            result = subprocess.run([sys.executable, str(REPO/'relay.py'), 'run', '--task', 'Tidy'], cwd=self.work, stdin=read_end,
+                                    capture_output=True, text=True, timeout=30, env={**self.env, 'FAKE_PLAN': 'finish-after-input'})
+        finally: os.close(read_end)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_when_codex_runs_out_claude_takes_over_with_the_relay_note(self):
         self.assertEqual(self.relay(['work-then-out', 'finish'], 'run', '--task', 'Tidy'), 0)
         self.assertIn('ran out of usage', self.prompt(1))

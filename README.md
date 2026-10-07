@@ -90,13 +90,15 @@ Add `.relay/transcripts/` to your `.gitignore`.
 
 - **Subscriptions only.** Claude runs with `ANTHROPIC_*` and provider overrides removed and must be signed in with claude.ai. Codex runs with `OPENAI_API_KEY` removed and must be signed in with ChatGPT. There is no API-key fallback.
 - **It always ends.** Nothing retries, loops forever or runs on a schedule. Backup mode uses at most one session of each assistant per run.
-- **Reviewers can't edit.** Codex reviews in its read-only sandbox, and Claude reviews with read-only tools.
+- **Reviewers can't edit.** Codex reviews in its read-only sandbox. Claude reviews with read-only tools plus your `tests` commands, so both can prove a finding by running the tests.
 - **No publishing.** Assistants are told never to push, and the relay stops if one switches branch.
 - **Know the limits.** The ledger guards test runners that call it. It isn't a sandbox against deliberate changes to code or environment. Codex's workspace-write sandbox usually can't make Git commits, so it leaves changes for the next assistant and says so in the note.
 
 ## Results so far
 
 ![Real results](docs/images/scores.png)
+
+**Groupthink test.** On a small pricing project with a written spec, a scripted first assistant handed over work with planted mistakes and a confident, partly false report: mistakes marked "checked", a wrong "decision", a "not in scope", and a made-up worry. Codex and Claude each reviewed it, blind and not blind (8 reviews in all). Every review caught every planted mistake, none approved, none repeated the made-up worry, and the blind look added findings. In a fully real run Codex found two weak tests Claude had missed, and withdrew one of its own claims when the code proved it wrong. Small sample, and a written spec makes mistakes easy to prove: expect more anchoring on judgement calls with no written standard, which is where blind review matters most.
 
 Built while improving a customer-service AI prototype. Make and check was run live twice: once on one test case (2 of 2 calls), then on two hard test cases three times each (12 of 12 calls). All seven results scored 100, and Codex re-checked every score itself before approving. Take turns was also run live. Backup mode is covered by the end-to-end tests, but a real usage-limit hand-over hasn't happened yet. If you see one, the exact limit message in `.relay/transcripts/` is the useful thing to report.
 

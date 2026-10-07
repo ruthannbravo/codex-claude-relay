@@ -222,17 +222,22 @@ Another assistant has just worked on this task. You will not see its report yet,
 first, so you are not steered by how it framed things. Do not open anything in .relay/, do not read its
 commit messages for its explanations, and skip its write-ups ({', '.join(notes_files()) or 'progress notes'}) even
 in git diff or git log -p: look only at the work itself (git status, git diff, git log for which files changed, and
-the files). You are read-only: do not edit files or make model calls.
+the files). You are read-only: do not edit files or make model calls.{run_tests()}
 
 Judge the work against the task and the project's own criteria ({criteria}). List what is right, what is wrong or
 missing, and anything you are unsure about, each with evidence (file and line). Do not give a verdict."""
+
+def run_tests():
+    if not CONFIG['tests']: return ''
+    return (' To prove a finding, run the tests: ' + '; '.join(CONFIG['tests']) + ' (exactly as written, from the repository '
+            'root, without cd). Other commands may be refused, so check anything else by reading the code and working it out.')
 
 def checker_prompt(agent, task, rnd, blind_findings=None):
     criteria = ', '.join(CONFIG['review_criteria'] or CONFIG['notes']) or 'the README'
     return f"""You are {agent.capitalize()}, the independent reviewer in round {rnd} of a make-and-check relay on this repository.
 Task: {task}
 
-You are read-only: do not edit files or make model calls. Read {rel(BATON)} (the maker's report), then check the
+You are read-only: do not edit files or make model calls.{run_tests()} Read {rel(BATON)} (the maker's report), then check the
 actual work: git log, git diff, the files and any saved results it names. Judge it against the task and the
 project's own criteria ({criteria}). Verify claims yourself rather than trusting the report; quote evidence.
 {compare(blind_findings)}
@@ -259,7 +264,9 @@ def command_for(agent, prompt, last_message, live_calls=False, read_only=False):
     if agent == 'claude':
         model = ['--model', CONFIG['claude_model']] if CONFIG['claude_model'] else []
         if read_only:
-            tools = ['Read', 'Glob', 'Grep', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git status:*)']
+            # The project's own tests are allowed so Claude can prove a finding, as Codex can in its read-only sandbox.
+            tools = ['Read', 'Glob', 'Grep', *[f'Bash({t}:*)' for t in CONFIG['tests']], 'Bash(git diff:*)', 'Bash(git log:*)',
+                     'Bash(git show:*)', 'Bash(git status:*)']
             return ['claude', '-p', prompt, '--safe-mode', *model, '--permission-mode', 'default', '--allowedTools', *tools]
         tests = [f'Bash({t}:*)' for t in CONFIG['tests']]
         live = [f"Bash({CONFIG['live_command']}:*)"] if live_calls and CONFIG['live_command'] else []
@@ -293,7 +300,7 @@ def session(agent, command, label, timeout, budget=None):
         env = subscription_env(agent)
         env['RELAY_CALL_BUDGET'] = str(budget if budget is not None else create_budget(0))
         with transcript.open('x') as out:
-            code = subprocess.run(command, cwd=ROOT, env=env, timeout=timeout, stdout=out, stderr=subprocess.STDOUT).returncode
+            code = subprocess.run(command, cwd=ROOT, env=env, timeout=timeout, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT).returncode
     except subprocess.TimeoutExpired:
         code = None
     finally:
