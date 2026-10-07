@@ -90,7 +90,7 @@ class Relay(unittest.TestCase):
 
     def test_a_bare_ask_user_becomes_a_question_from_whats_next(self):
         self.assertEqual(self.relay(['ask'], 'run', '--task', 'Tidy'), 0)
-        self.assertEqual(self.questions()['questions'], [{'question': 'more', 'suggest': ''}])
+        self.assertEqual(self.questions()['questions'], [{'question': 'more', 'suggest': '', 'from': 'codex'}])
 
     def test_answer_records_final_decisions_and_carries_on(self):
         self.relay(['ask-q', 'finish'], 'run', '--task', 'Tidy')
@@ -122,11 +122,49 @@ class Relay(unittest.TestCase):
     def test_a_reviewers_questions_come_to_the_user_before_the_next_round(self):
         self.configure()
         self.assertEqual(self.relay(['make0', 'blind', 'verdict-revise-q'], 'run', '--task', 'Tune', '--check', '2'), 0)
-        self.assertEqual(self.questions()['questions'], [{'question': 'Is the phone number really required?', 'suggest': 'make it optional, because nothing uses it'}])
-        self.assertEqual(self.questions()['resume']['args'], ['run', '--check', '1', '--calls', '0', '--maker', 'claude'])
+        self.assertEqual(self.questions()['questions'], [{'question': 'Is the phone number really required?', 'suggest': 'make it optional, because nothing uses it', 'from': 'codex'}])
+        self.assertEqual(self.questions()['resume']['args'], ['run', '--check', '1', '--calls', '0', '--maker', 'claude', '--from-round', '2'])
         self.assertEqual(self.relay(['make0', 'blind', 'verdict-revise-q', 'make0', 'blind', 'verdict-approve'], 'answer', '--answer', 'skip'), 0)
         self.assertIn('Left to the assistants to decide: Is the phone number really required?', self.baton())
-        self.assertIn('approved by codex', self.output)
+        self.assertIn('Round 2: Claude working', self.output)  # the count carries on after your answers
+        self.assertIn('approved by codex in round 2', self.output)
+
+    def test_both_assistants_questions_come_in_one_stop(self):
+        self.configure()
+        self.assertEqual(self.relay(['make0-q', 'blind', 'verdict-revise-q'], 'run', '--task', 'Tune', '--check', '2'), 0)
+        self.assertEqual(self.sessions(), 3)  # the maker's questions waited for the review instead of stopping the run
+        self.assertIn('Claude and Codex have 3 questions for you', self.output)
+        self.assertIn('(asked by Codex)', self.output)
+        self.assertEqual([q['from'] for q in self.questions()['questions']], ['claude', 'claude', 'codex'])
+
+    def test_the_assistants_are_told_not_to_reopen_your_decisions(self):
+        self.relay(['finish'], 'run', '--task', 'Tidy')
+        self.assertIn('never\nsuggest an answer that undoes one of their decisions', self.prompt(0))
+        self.assertIn('ask everything you need in one go', self.prompt(0))
+
+    # Seeing the page
+    def fake_chrome(self):
+        chrome = self.tmp/'chrome'
+        chrome.write_text('#!/bin/sh\nfor a in "$@"; do case "$a" in --screenshot=*) echo png > "${a#--screenshot=}";; esac; done\n')
+        chrome.chmod(0o755); self.env['RELAY_CHROME'] = str(chrome)
+
+    def test_look_screenshots_each_page_at_desktop_and_phone_size(self):
+        self.fake_chrome(); self.configure(look=['index.html'])
+        self.assertEqual(self.relay([], 'look'), 0)
+        self.assertEqual(sorted(p.name for p in (self.work/'.relay/screenshots').iterdir()), ['index-html-desktop.png', 'index-html-phone.png'])
+
+    def test_reviewers_get_the_screenshots_and_the_maker_may_take_them(self):
+        self.fake_chrome(); self.configure(look=['index.html'])
+        self.relay(['make0', 'blind', 'verdict-approve'], 'run', '--task', 'Tune', '--check', '1')
+        self.assertIn('relay.py look', self.prompt(0))
+        self.assertIn('.relay/screenshots/index-html-phone.png', self.prompt(1))
+        self.assertIn('--image=', (self.tmp/'state.args1').read_text())
+
+    def test_the_lock_name_can_match_a_projects_own(self):
+        self.configure(lock_name='agent-writer-lock')
+        (self.work/'.git/agent-writer-lock').mkdir()
+        self.assertEqual(self.relay(['finish'], 'run', '--task', 'Tidy'), 1)
+        self.assertIn('already claimed', self.output)
 
     def test_reviews_are_short_and_record_changes_of_mind(self):
         self.configure()

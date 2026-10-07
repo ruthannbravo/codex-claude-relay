@@ -5,7 +5,8 @@ Linked as `codex` and `claude` on PATH. $FAKE_PLAN is a comma list of behaviours
 order (the call count lives in $FAKE_STATE): work-then-out, out, finish, finish-after-input, ask, continue, error, make<N>
 (reserve N ledger calls through budget/relay_budget.py), blind (a blind review that reports whether the maker's
 note was visible), verdict-<approve|revise|ask-user>, ask-q (two questions
-for the user, one with a suggestion), verdict-revise-q (a review with a question for the user).
+for the user, one with a suggestion), verdict-revise-q (a review with a question for the user),
+make0-q (a maker round that also leaves two questions, without stopping).
 """
 import json, os, re, sys
 from pathlib import Path
@@ -26,6 +27,7 @@ def baton(status, did, extra='', sections=''):
     if kept and '## Decisions and why' not in sections: sections = kept[0].rstrip() + '\n\n' + sections
     Path('.relay/baton.md').write_text(f'# Relay baton\n\nStatus: {status}\nFrom: {me}\nTo: {other}\nTask: {task}\n{extra}'
                                        f"Updated: now\n\n## What I did\n{did}\n\n## What's next\nmore\n\n## Watch out for\nnothing\n\n{sections}")
+QUESTIONS = '## Questions for you\n1. Should the log-in link stay?\n2. Which colour for the button?\n   Suggest: blue, because it matches the logo\n'
 print('reading notes: usage limit policy mentioned in a file the assistant read')
 print('\n'.join(f'working on step {i}' for i in range(12)))
 if step == 'work-then-out': Path('notes.txt').write_text('half done\n'); print("ERROR: You've hit your usage limit. Try again at 9:00 PM."); sys.exit(1)
@@ -34,7 +36,6 @@ if step == 'error': print('ERROR: something else broke'); sys.exit(1)
 if step == 'finish-after-input': sys.stdin.read(); step = 'finish'  # like codex exec, which reads stdin to the end first
 if step == 'finish': Path('notes.txt').write_text('finished\n'); baton('done', 'finished the task'); sys.exit(0)
 if step == 'ask': baton('ask-user', 'needs a decision'); sys.exit(0)
-QUESTIONS = '## Questions for you\n1. Should the log-in link stay?\n2. Which colour for the button?\n   Suggest: blue, because it matches the logo\n'
 if step == 'ask-q': baton('ask-user', 'needs two answers', sections=QUESTIONS); sys.exit(0)
 if step == 'continue': baton('continue', 'one step'); sys.exit(0)
 if step == 'make0-words': baton('continue', 'reviewed, no calls', 'Calls used: 0 live model calls\n'); sys.exit(0)
@@ -45,6 +46,7 @@ if step.startswith('make') and step[4:].isdigit():
         try: reserve_relay_call(); used += 1
         except RuntimeError: break
     baton('continue', f'made a change with {used} calls', f'Calls used: {used}\n'); sys.exit(0)
+if step == 'make0-q': baton('continue', 'made a change', 'Calls used: 0\n', sections=QUESTIONS); sys.exit(0)
 if step == 'make0-notes':  # writes its findings into the progress file as well as the note
     Path('docs').mkdir(exist_ok=True)
     Path('docs/progress.md').write_text(Path('docs/progress.md').read_text() + 'MAKER FINDINGS: footer link broken\n')

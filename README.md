@@ -12,7 +12,7 @@ A small Python script that lets two AI coding assistants, OpenAI's **Codex** and
 | **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round Claude does the work and may run live tests within the call budget. Codex then reviews it read-only and ends with approve, revise or ask-user. "Revise" goes back to Claude with the review. | Approved · needs you · round limit (1–5) · call budget exceeded or misreported · any error |
 | **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · needs you · turn limit (1–8) · any error |
 
-Plus `relay.py init` to set up a project (it asks you 6 quick questions), `relay.py answer` to answer questions the assistants left for you, `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
+Plus `relay.py init` to set up a project (it asks you 6 quick questions), `relay.py answer` to answer questions the assistants left for you, `relay.py look` to screenshot your pages at desktop and phone size, `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
 
 ![Make and check](docs/images/make-and-check.png)
 
@@ -35,9 +35,15 @@ Codex has 2 questions for you before carrying on:
 Thanks! Saved as your decisions. Continuing…
 ```
 
+In make and check, the maker's questions wait for the review (unless it can't go on without them), so you get both assistants' questions in one stop, each marked with who asked. Assistants are told to ask everything in one go, not to ask again about anything you've decided, and never to suggest an answer that undoes one of your decisions; the reviewer flags any change that goes against one.
+
 Your answers are saved as final `[user]` decisions that neither assistant can overturn. If no one is at the keyboard, the relay lists the questions, saves them in `.relay/questions.json` and stops; `relay.py answer` asks them one by one when you're back and carries on from there. Type `skip` to leave one to the assistants.
 
 **In Claude desktop or another chat app:** ask Claude to run the relay for you. When it stops with questions, Claude shows them as clickable choices (the suggestion first, with its reason) and passes your answers back with `relay.py answer --answer "..." --answer "..."`. `relay.py init` puts that instruction in `CLAUDE.md`.
+
+## Seeing the page
+
+For visual work, list your pages in `relay.json`, for example `"look": ["index.html"]` or `"look": ["http://localhost:3000"]`. In make and check the relay then screenshots each page at desktop and phone size after every round of work (`.relay/screenshots/`), and both reviewers judge the pictures as well as the code: Claude opens them, and Codex gets them attached. The maker can take them itself with `relay.py look` to check its work before handing over. It needs Chrome or Chromium (or `RELAY_CHROME` set to one); pages that refuse to be shown in a frame won't get a phone picture.
 
 ## How it keeps context
 
@@ -109,6 +115,8 @@ Optionally add `relay.json` at your repository root (see [`relay.example.json`](
 | `live_command` | The only command allowed to make live model calls (needed for `--calls`) | none |
 | `review_criteria` | Files the reviewer judges against | the `notes` |
 | `claude_model` / `codex_model` | Model for each CLI | `sonnet` / the CLI's default |
+| `look` | Pages to screenshot at desktop and phone size (files or URLs), so the assistants can see them | none |
+| `lock_name` | Name of the writer lock in the Git directory, if your project already has its own single-writer lock | `relay-writer-lock` |
 | `keep_chats` | Also save each session as a chat in the Claude and Codex apps. Off by default, because a run starts several separate sessions (they must be separate for the blind review to be blind) and the relay keeps its own record in `.relay/` | `false` |
 
 Add `.relay/transcripts/` to your `.gitignore`.
@@ -130,7 +138,7 @@ Add `.relay/transcripts/` to your `.gitignore`.
 
 A second test had almost no rules ("Make the sign-up page better", no spec, no tests) and a persuasive report: "in good shape", a pre-ticked marketing box defended as common practice, a removed log-in link called best practice, and a made-up top priority. Across 8 reviews none approved and none adopted the made-up priority. Blind reviews caught 19 of 20 planted problems; reviews that read the report first caught 17 of 20, and one of those only covered what the report had raised. Blind reviews also found more real problems nobody had planted. That is the anchoring the blind look is there to stop: the report sets the reviewer's agenda. Small samples (two runs per set-up), so treat these as signs, not proof.
 
-A third test had no rules at all beyond the owner's answers to `relay.py init` ("Make the home page feel calmer", taste: minimal, water-like, glass, clean fonts). The new questions worked live: the maker asked before guessing about claims it couldn't verify, and refused to invent trial terms. Then the same finished work was reviewed six times. Every blind review (5 of 5) kept its findings ("Changed my mind: None") and left taste calls to the owner as questions (3 each). Both reviews that read the report first raised no questions at all, and Claude's approved the page. The report had already said "Questions for you: None", and the reviewer took that on. Small sample, but it's the clearest sign yet that the blind look matters most when there are no rules. Every reviewer's top request was to see the page on a phone, which none of them could do: if your work is visual, put a screenshot command in `tests`.
+A third test had no rules at all beyond the owner's answers to `relay.py init` ("Make the home page feel calmer", taste: minimal, water-like, glass, clean fonts). The new questions worked live: the maker asked before guessing about claims it couldn't verify, and refused to invent trial terms. Then the same finished work was reviewed six times. Every blind review (5 of 5) kept its findings ("Changed my mind: None") and left taste calls to the owner as questions (3 each). Both reviews that read the report first raised no questions at all, and Claude's approved the page. The report had already said "Questions for you: None", and the reviewer took that on. Small sample, but it's the clearest sign yet that the blind look matters most when there are no rules. Every reviewer's top request was to see the page on a phone, which none of them could do; that's why `look` exists. With it, a reviewer spotted a menu link wrapping onto its own line on a phone, which no code-only review had caught.
 
 Built while improving a customer-service AI prototype. Make and check was run live twice: once on one test case (2 of 2 calls), then on two hard test cases three times each (12 of 12 calls). All seven results scored 100, and Codex re-checked every score itself before approving. Take turns was also run live. Backup mode is covered by the end-to-end tests. Codex's real limit message ("You've hit your usage limit… try again at 2:43 PM") has now been seen and recognised, during a review, where the relay stops rather than switching; a full backup hand-over hasn't happened live yet. If you see one, the exact limit message in `.relay/transcripts/` is the useful thing to report.
 
