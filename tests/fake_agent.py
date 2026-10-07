@@ -2,7 +2,7 @@
 """Stand-in for the codex and claude CLIs, so the real relay can be tested end to end with no model calls.
 
 Linked as `codex` and `claude` on PATH. $FAKE_PLAN is a comma list of behaviours, one per session, consumed in
-order (the call count lives in $FAKE_STATE): work-then-out, out, finish, finish-after-input, ask, continue, error, make<N>
+order (the call count lives in $FAKE_STATE): work-then-out, out, weekly-out, finish, finish-after-input, ask, continue, error, make<N>
 (reserve N ledger calls through budget/relay_budget.py), blind (a blind review that reports whether the maker's
 note was visible), verdict-<approve|revise|ask-user>, ask-q (two questions
 for the user, one with a suggestion), verdict-revise-q (a review with a question for the user),
@@ -31,6 +31,7 @@ QUESTIONS = '## Questions for you\n1. Should the log-in link stay?\n2. Which col
 print('reading notes: usage limit policy mentioned in a file the assistant read')
 print('\n'.join(f'working on step {i}' for i in range(12)))
 if step == 'work-then-out': Path('notes.txt').write_text('half done\n'); print("ERROR: You've hit your usage limit. Try again at 9:00 PM."); sys.exit(1)
+if step == 'weekly-out': print("You've hit your weekly limit · resets 3pm (America/Toronto)"); sys.exit(1)  # Claude's real wording
 if step == 'out': print('Claude AI usage limit reached. Your limit will reset at 10pm.'); sys.exit(0)
 if step == 'error': print('ERROR: something else broke'); sys.exit(1)
 if step == 'finish-after-input': sys.stdin.read(); step = 'finish'  # like codex exec, which reads stdin to the end first

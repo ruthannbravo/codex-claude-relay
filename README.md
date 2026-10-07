@@ -6,7 +6,7 @@ Let two AI coding helpers, **Codex** (by OpenAI) and **Claude** (by Anthropic), 
 
 ## What it does
 
-**If one runs out of usage, the other carries on.** Both helpers come with usage limits. When one hits its limit mid-job, the other reads the note and picks up where it stopped.
+**If one runs out of usage, the other carries on.** Both helpers come with usage limits (hourly, daily or weekly). When one hits its limit mid-job, in any mode, the other reads the note and picks up where it stopped.
 
 ![If one runs out, the other carries on.](docs/images/2-backup.png)
 
@@ -91,8 +91,8 @@ A single Python file with no dependencies. It runs the `codex` and `claude` CLIs
 | Mode | Command | What happens | Stops when |
 | --- | --- | --- | --- |
 | **Backup** (default) | `relay.py run --task "..."` | One assistant works through the whole task, updating the note as it goes. If it runs out of usage, the relay records that and starts the other one, which picks up from the note. `--start claude` swaps who goes first. | Done · waiting for your answers · both out of usage (prints both reset times) · any other error |
-| **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round the maker (Claude, or `--maker codex`) does the work and may make live test calls within the budget. The checker reviews read-only, blind first, and ends with approve, revise or ask-user. | Approved · waiting for your answers · round limit (1–5) · call budget exceeded or misreported · any error |
-| **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · waiting for your answers · turn limit (1–8) · any error |
+| **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round the maker (Claude, or `--maker codex`) does the work and may make live test calls within the budget. The checker reviews read-only, blind first, and ends with approve, revise or ask-user. | Approved · waiting for your answers · round limit (1–5) · call budget exceeded or misreported · any error. If the maker runs out of usage, the other finishes the job alone (and it tells you how to get it checked later). |
+| **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · waiting for your answers · turn limit (1–8) · any error. If one runs out of usage, the other finishes alone. |
 
 Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers; without a keyboard it lists them and takes `--answer` once per question), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). `teach [--remove]` (add or remove the relay note in Claude's and Codex's general instructions), `uninstall`, `version`. Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
 

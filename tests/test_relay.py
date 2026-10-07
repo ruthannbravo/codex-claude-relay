@@ -59,6 +59,43 @@ class Relay(unittest.TestCase):
         self.assertIn('To: codex', self.baton())
         self.assertIn('## Relay note', self.baton())
 
+    def test_the_real_limit_messages_are_recognised(self):
+        sys.path.insert(0, str(REPO)); import relay
+        for seen in ["You've hit your weekly limit · resets 3pm (America/Toronto)",
+                     "ERROR: You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 2:43 PM."]:
+            self.assertTrue(relay.OUT_OF_USAGE.search(seen), seen)
+        self.assertFalse(relay.OUT_OF_USAGE.search('ERROR: something else broke'))
+
+    def test_a_weekly_limit_hands_over_in_backup(self):
+        self.assertEqual(self.relay(['weekly-out', 'finish'], 'run', '--task', 'Tidy'), 0)
+        self.assertIn('Handing the task to Claude', self.output)
+
+    def test_in_make_and_check_the_other_carries_on_when_the_maker_runs_out(self):
+        self.configure()
+        self.assertEqual(self.relay(['weekly-out', 'finish'], 'run', '--task', 'Tune', '--check', '2'), 0)
+        self.assertIn('Claude is out of usage', self.output)
+        self.assertIn('Codex carries on alone', self.output)
+        self.assertIn('task done', self.output)
+        self.assertIn('has not been checked yet', self.output)
+        self.assertIn('ran out of usage', self.prompt(1))  # Codex is told it is picking up from Claude
+
+    def test_in_make_and_check_a_reviewer_out_of_usage_stops_clearly(self):
+        self.configure()
+        self.assertEqual(self.relay(['make0', 'weekly-out'], 'run', '--task', 'Tune', '--check', '1'), 1)
+        self.assertIn('Codex ran out of usage before it could review', self.output)
+        self.assertIn('The work is saved', self.output)
+
+    def test_in_take_turns_the_other_carries_on_when_one_runs_out(self):
+        self.assertEqual(self.relay(['weekly-out', 'finish'], 'run', '--task', 'Build', '--take-turns', '4'), 0)
+        self.assertIn('Codex is out of usage', self.output)
+        self.assertIn('task done', self.output)
+
+    def test_both_out_reports_both_reset_times_after_a_mode_hand_over(self):
+        self.configure()
+        self.assertEqual(self.relay(['weekly-out', 'out'], 'run', '--task', 'Tune', '--check', '1'), 1)
+        self.assertIn('both assistants are out of usage', self.output)
+        self.assertIn('resets 3pm', self.output)
+
     def test_other_errors_do_not_switch_assistants(self):
         self.assertEqual(self.relay(['error', 'finish'], 'run', '--task', 'Tidy'), 1)
         self.assertEqual(self.sessions(), 1)

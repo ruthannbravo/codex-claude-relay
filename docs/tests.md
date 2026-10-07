@@ -49,4 +49,4 @@ With rules written down, mistakes are easy to prove, so this test was the easy o
 
 - Make and check, on two hard test cases three times each: 12 of 12 calls used, all scored 100, and Codex re-checked every score before approving.
 - Take turns ran live.
-- Codex's real usage-limit message ("You've hit your usage limit… try again at 2:43 PM") was seen and recognised. A full live hand-over from one assistant to the other hasn't happened yet; the end-to-end tests cover it. If you see one, the exact limit message in `.relay/transcripts/` is useful to report.
+- Both real limit messages have now been seen. Codex: "You've hit your usage limit… try again at 2:43 PM". Claude: "You've hit your weekly limit · resets 3pm". The first live sighting of Claude's message was missed (the relay only knew "usage limit", and make-and-check stopped instead of handing over); both are fixed and tested with the exact wording. If you see a limit message the relay misses, the exact text in `.relay/transcripts/` is the useful thing to report.

@@ -64,7 +64,9 @@ TASK_TIMEOUT = 3*60*60    # one whole-task session
 MAX_PAUSES = 3            # question stops in one run, so a run always ends
 # How the CLIs report a spent subscription allowance. Checked in the last 10 lines of a session that failed,
 # and the last 5 lines of one that exited cleanly, so a file the assistant read earlier cannot trigger it.
-OUT_OF_USAGE = re.compile(r'usage limit|hit your (usage )?limit|limit reached|limit will reset|quota exceeded|out of (usage|credits)', re.I)
+# Seen live: Codex "You've hit your usage limit. ... try again at 2:43 PM"; Claude "You've hit your weekly limit · resets 3pm".
+OUT_OF_USAGE = re.compile(r"usage limit|hit your (\w+ )?limit|(weekly|daily|monthly|hourly|session|5-hour) limit|limit reached|"
+                          r"limit will reset|resets (at )?\d{1,2}(:\d\d)? ?(am|pm)|quota exceeded|out of (usage|credits)", re.I)
 DEFAULTS = {'notes': ['AGENTS.md', 'CLAUDE.md', 'README.md'], 'checkpoint': None, 'tests': [], 'live_command': None,
             'review_criteria': [], 'claude_model': 'sonnet', 'codex_model': None, 'blind_hide': [],
             'keep_chats': False, 'look': [], 'lock_name': 'relay-writer-lock'}
@@ -531,12 +533,13 @@ def pause(questions, asked_by, resume, pauses):
     return stop(f'waiting for your answers: run {RELAY_CMD} answer')
 
 # ---- mode 1: backup --------------------------------------------------------------------------------------------
-def run_backup(task, start, dry_run):
+def run_backup(task, start, dry_run, resumed=None):
+    """resumed: the limit message of the assistant that just ran out, when another mode hands over to this one."""
     task, agent = pick_up(task, start)
     if dry_run:
         print(f'--- {agent} starts; {other(agent)} takes over only if {agent} runs out of usage\n{backup_prompt(agent, task, False)}\n')
         print('Dry run: no model calls, nothing claimed or logged.'); return 0
-    branch, picking_up, ran_out, pauses = git('branch', '--show-current'), False, {}, 0
+    branch, picking_up, ran_out, pauses = git('branch', '--show-current'), bool(resumed), {other(agent): resumed} if resumed else {}, 0
     log(f'relay started (backup): {agent} first, branch {branch}, task: {task}')
     while True:
         if busy(): return stop('workspace already claimed; run status and stop the other writer first', ok=False)
@@ -587,6 +590,25 @@ def hand_over(task, agent, before, limit):
         write_baton(task, agent, other(agent), 'continue', f'{agent.capitalize()} ran out of usage before writing a hand-off.',
                     'Read the uncommitted changes and the progress notes, then carry on with the task.', note.strip())
     return None
+
+def carry_on_alone(task, agent, before, limit, mode):
+    """Whatever the mode, when one assistant runs out of usage the other picks up from the note and finishes the job."""
+    log(f'{agent} ran out of usage during {mode}: {limit}')
+    finished = hand_over(task, agent, before, limit)
+    if finished: return stop('task done' if finished == 'done' else f'waiting for your answers: run {RELAY_CMD} answer')
+    helper = other(agent)
+    print(f'{agent.capitalize()} is out of usage ({limit}). {helper.capitalize()} carries on alone from the note.', flush=True)
+    code = run_backup(None, helper, False, resumed=limit)
+    if mode == 'make and check':
+        print(f'Note: {agent.capitalize()} was out of usage, so this work has not been checked yet. Once it resets, have it '
+              f'checked with: {RELAY_CMD} run --task "Check and finish: {task}" --check 1 --maker {helper}')
+    return code
+
+def reviewer_out(task, checker, maker, limit):
+    log(f'{checker} ran out of usage before reviewing: {limit}')
+    return stop(f'{checker.capitalize()} ran out of usage before it could review ({limit}). The work is saved. Once it resets, '
+                f'review it with: {RELAY_CMD} run --task "Check and finish: {task}" --check 1 --maker {maker}. '
+                f'Or carry on without a review: {RELAY_CMD} run --task "{task}" --start {maker}', ok=False)
 
 # ---- mode 2: make and check ------------------------------------------------------------------------------------
 def notes_files():
@@ -650,7 +672,9 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True, first=1):
                 command = command_for(maker, maker_prompt(maker, task, rnd, final, budget - used, review), str(Path(tmp)/'last.txt'), live_calls=budget - used > 0)
                 code, transcript = session(maker, command, f'round-{rnd}-make', TASK_TIMEOUT, budget=ledger)
             if code is None: print('stopped'); return stop(f'round {rnd}: {maker} ran past {TASK_TIMEOUT//3600} hours', ok=False)
-            if code: print('failed'); return stop(f'round {rnd}: {maker} stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
+            limit = out_of_usage(transcript) if code else out_of_usage(transcript, lines=5)
+            if limit: print('ran out of usage', flush=True); return carry_on_alone(task, maker, before, limit, 'make and check')
+            if code: print('failed'); return stop(f'round {rnd}: {maker} stopped with an error (see {rel(transcript)})', ok=False)
             print('done', flush=True)
             baton = read_baton()
             if not baton or baton['text'] == before: return stop(f'round {rnd}: {maker} finished without updating the baton', ok=False)
@@ -674,7 +698,9 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True, first=1):
             print(f'Round {rnd}: {checker.capitalize()} reviewing blind… ', end='', flush=True)
             code, transcript, blind_findings = blind_session(checker, task, rnd)
             if code is None: print('stopped'); return stop(f'round {rnd}: the blind review ran past {TURN_TIMEOUT//60} minutes', ok=False)
-            if code: print('failed'); return stop(f'round {rnd}: the blind review stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
+            limit = out_of_usage(transcript) if code else None
+            if limit: print('ran out of usage', flush=True); return reviewer_out(task, checker, maker, limit)
+            if code: print('failed'); return stop(f'round {rnd}: the blind review stopped with an error (see {rel(transcript)})', ok=False)
             print('done', flush=True)
         with tempfile.TemporaryDirectory() as tmp:
             last = Path(tmp)/'last.txt'
@@ -682,7 +708,9 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True, first=1):
             code, transcript = session(checker, command_for(checker, checker_prompt(checker, task, rnd, blind_findings), str(last), read_only=True), f'round-{rnd}-check', TURN_TIMEOUT)
             text = (last.read_text() if last.exists() and last.read_text().strip() else transcript.read_text(errors='replace')).strip()
         if code is None: print('stopped'); return stop(f'round {rnd}: the review ran past {TURN_TIMEOUT//60} minutes', ok=False)
-        if code: print('failed'); return stop(f'round {rnd}: the review stopped with an error ({out_of_usage(transcript) or "see " + rel(transcript)})', ok=False)
+        limit = out_of_usage(transcript) if code else None
+        if limit: print('ran out of usage', flush=True); return reviewer_out(task, checker, maker, limit)
+        if code: print('failed'); return stop(f'round {rnd}: the review stopped with an error (see {rel(transcript)})', ok=False)
         verdict = parse_verdict(text)
         print(verdict or 'no verdict', flush=True)
         REVIEWS.mkdir(parents=True, exist_ok=True)
@@ -738,6 +766,8 @@ def run_turns(task, turns, start, dry_run, first=1):
             print(f'Turn {turn}: {agent.capitalize()} working… ', end='', flush=True)
             code, transcript = session(agent, command_for(agent, turn_prompt(agent, task, turn, last), str(Path(tmp)/'last.txt')), f'turn-{turn}', TURN_TIMEOUT)
         if code is None: print('stopped'); return stop(f'turn {turn}: {agent} ran past {TURN_TIMEOUT//60} minutes', ok=False)
+        limit = out_of_usage(transcript) if code else out_of_usage(transcript, lines=5)
+        if limit: print('ran out of usage', flush=True); return carry_on_alone(task, agent, before, limit, 'take turns')
         print('done' if not code else 'failed', flush=True)
         if code: return stop(f'turn {turn}: {agent} exited with code {code}; see {rel(transcript)}', ok=False)
         baton = read_baton()
