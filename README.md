@@ -1,156 +1,136 @@
 # Codex ⇄ Claude relay
 
-A small Python script that lets two AI coding assistants, OpenAI's **Codex** and Anthropic's **Claude**, work on the same task in the same Git repository. They take turns through a written hand-off note, so neither one starts from scratch and you don't have to re-explain the task.
+Let two AI coding helpers, **Codex** (by OpenAI) and **Claude** (by Anthropic), work on the same project together. They pass a written note back and forth, like runners passing a baton, so neither starts from scratch and you never have to re-explain the job.
 
-![Backup mode: when one runs out of usage, the other carries on](docs/images/backup.png)
+![Two AI helpers. One job. One shared note.](docs/images/1-overview.png)
 
-## Three modes
+## What it does
+
+**If one runs out of usage, the other carries on.** Both helpers come with usage limits. When one hits its limit mid-job, the other reads the note and picks up where it stopped.
+
+![If one runs out, the other carries on.](docs/images/2-backup.png)
+
+**One does the work, the other checks it.** The checker looks at the work on its own first, before it reads the other one's report. That way it forms its own opinion instead of just agreeing.
+
+![One does the work. The other checks it.](docs/images/3-check.png)
+
+**When only you can decide, it asks you.** Your taste, your goals, facts about your business: the helpers ask instead of guessing. You get a short question with a suggested answer, and your answer is final.
+
+![When only you can decide, it asks you.](docs/images/4-asks.png)
+
+**It looks at your page, not just the code.** For websites and apps, it takes pictures at computer and phone size after each round, and the checker judges what people will actually see.
+
+![It looks at your page, not just the code.](docs/images/5-look.png)
+
+**We tested whether they just agree with each other.** When the checker read the other one's report first, it sometimes stopped asking questions and even approved unfinished work. When it looked first, it kept its own view every time. So looking first is on by default. [Read the tests](docs/tests.md).
+
+![Do they just agree with each other? We tested it.](docs/images/6-tested.png)
+
+## Getting started
+
+![Getting started](docs/images/7-start.png)
+
+1. **Install both helpers** and sign in with your normal plans: [Codex](https://github.com/openai/codex) (with ChatGPT) and [Claude Code](https://docs.claude.com/en/docs/claude-code) (with Claude). You also need Python 3.9 or newer and Git, which most Macs already have.
+2. **Download the relay into your project and answer 6 quick questions** about what the project is and what "good" looks like to you:
+   ```sh
+   curl -O https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/relay.py
+   python3 relay.py init
+   ```
+3. **Give it a job:**
+   ```sh
+   python3 relay.py run --task "Make the home page feel calmer"
+   ```
+   Or skip the terminal and ask Claude (in the Claude app or Claude Code) to run the relay for you. It will show you any questions as clickable choices.
+
+## Common questions
+
+**Does it cost extra?** No. It uses the Codex and Claude plans you already pay for. It never uses paid API keys, even if you have one set up.
+
+**Is my project safe?** Only one helper can change files at a time. The checker can't edit anything. The helpers are told never to publish or upload your work: that stays your decision.
+
+**Do I need to be a programmer?** You need to be comfortable typing two or three commands, or you can ask Claude to run it for you. Everything the helpers ask you is in plain English.
+
+**What does it not do?** It doesn't run on a schedule or loop forever: every run ends, and it tells you why. And it only knows what's written down, so anything that matters should be in your answers or the project notes.
+
+---
+
+## For developers
+
+A single Python file with no dependencies. It runs the `codex` and `claude` CLIs in your Git repository and coordinates them through files.
+
+### Modes
 
 | Mode | Command | What happens | Stops when |
 | --- | --- | --- | --- |
-| **Backup** (default) | `relay.py run --task "..."` | One assistant works through the whole task, updating the note as it goes. If it runs out of usage, the relay records that and starts the other one, which picks up from the note. `--start claude` swaps who goes first. | Done · needs you · both out of usage (it prints both reset times) · any other error |
-| **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round Claude does the work and may run live tests within the call budget. Codex then reviews it read-only and ends with approve, revise or ask-user. "Revise" goes back to Claude with the review. | Approved · needs you · round limit (1–5) · call budget exceeded or misreported · any error |
-| **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · needs you · turn limit (1–8) · any error |
+| **Backup** (default) | `relay.py run --task "..."` | One assistant works through the whole task, updating the note as it goes. If it runs out of usage, the relay records that and starts the other one, which picks up from the note. `--start claude` swaps who goes first. | Done · waiting for your answers · both out of usage (prints both reset times) · any other error |
+| **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round the maker (Claude, or `--maker codex`) does the work and may make live test calls within the budget. The checker reviews read-only, blind first, and ends with approve, revise or ask-user. | Approved · waiting for your answers · round limit (1–5) · call budget exceeded or misreported · any error |
+| **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · waiting for your answers · turn limit (1–8) · any error |
 
-Plus `relay.py init` to set up a project (it asks you 6 quick questions), `relay.py answer` to answer questions the assistants left for you, `relay.py look` to screenshot your pages at desktop and phone size, `relay.py pass --to codex --task "..." --note "..."` to hand off by hand at the end of a normal chat, `relay.py status` to see who's working and the current note, and `--dry-run` on any `run` to see exactly what each assistant would be told, with no calls.
+Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
 
-![Make and check](docs/images/make-and-check.png)
+### How context is kept
 
-## When the assistants need you
+Each session starts with a blank memory, so everything that matters lives in files both assistants read first:
 
-Some things only you can settle: what you want, your taste, a fact about your business. The assistants are told not to guess these. They list them under "Questions for you" (at most 3, in plain English, each with a suggested answer and a one-line reason), and a vague task like "make it better" gets its questions before any work starts. The reviewer does the same, including for anything the other assistant only *assumed* about what you want.
+| Layer | File | What it holds |
+| --- | --- | --- |
+| Rulebook | `AGENTS.md` (Codex reads it automatically) and a `CLAUDE.md` pointing to it | What the project is, your setup answers, how to test it, rules |
+| Task note | `.relay/baton.md` | What I did · What's next · Watch out for · Decisions and why · Tried, didn't work · Questions for you |
+| Diary | your progress file and Git commit messages | Where things stand across days |
 
-The relay then brings the questions to you:
+Notes are only added to, never wiped: decisions and dead ends are copied forward on every hand-off, and if an assistant stops without writing, the relay keeps the old note and adds what it can see. Keep `AGENTS.md` and your progress file to about a page each, since every session re-reads them and that reading counts toward your usage.
 
-```
-Codex has 2 questions for you before carrying on:
+### Against groupthink
 
-1. The log-in link was removed to keep people focused on signing up. Keep it removed, or bring it back?
-   Suggested: bring it back, because members landing here need a way in.
-   Your answer (Enter = go with the suggestion):
+- **Blind first look** (make and check, on by default). The report and the maker's unsaved notes are set aside while the checker reviews the work alone. It then reads the report and lists what only it found, what only the maker reported, and any disagreements. A "Changed my mind" section must give new evidence for every finding it dropped. `--no-blind` skips this.
+- **Decisions say who made them.** `[user]`, `[codex]` or `[claude]`. Yours are final; an assistant's can be challenged only with evidence, and the old line is kept.
+- **Checked or assumed.** Every claim is marked `(checked: how)` or `(assumed)`. Anything assumed about what you want becomes a question for you.
+- **Two different models,** judged against your files and real tests rather than each other's opinion. Swap who goes first with `--start` or `--maker`.
 
-2. Should the phone number be required?
-   Your answer (Enter = let the assistants decide):
+### Questions for you
 
-Thanks! Saved as your decisions. Continuing…
-```
+Assistants list what only you can settle under "Questions for you": at most 3, in plain English, each with a suggested answer and a reason. In make and check, the maker's questions wait for the review, so both assistants' questions come in one stop. At a keyboard you answer in the terminal and the run carries on. Otherwise the relay saves them to `.relay/questions.json` and stops; `relay.py answer` asks them later, or takes `--answer "..."` once per question (`suggested` and `skip` work too) and resumes. Answers are recorded as `[user]` decisions, and assistants are told never to suggest undoing one.
 
-In make and check, the maker's questions wait for the review (unless it can't go on without them), so you get both assistants' questions in one stop, each marked with who asked. Assistants are told to ask everything in one go, not to ask again about anything you've decided, and never to suggest an answer that undoes one of your decisions; the reviewer flags any change that goes against one.
+### Seeing the page
 
-Your answers are saved as final `[user]` decisions that neither assistant can overturn. If no one is at the keyboard, the relay lists the questions, saves them in `.relay/questions.json` and stops; `relay.py answer` asks them one by one when you're back and carries on from there. Type `skip` to leave one to the assistants.
+Set `"look": ["index.html"]` (files or URLs) in `relay.json`. After each round of work the relay screenshots each page at 1280px and 390px wide into `.relay/screenshots/`. Claude reviewers open them; Codex reviewers get them attached with `--image`. The maker can run `relay.py look` itself. Needs Chrome or Chromium (or `RELAY_CHROME`). Pages that refuse to load in a frame get no phone picture.
 
-**In Claude desktop or another chat app:** ask Claude to run the relay for you. When it stops with questions, Claude shows them as clickable choices (the suggestion first, with its reason) and passes your answers back with `relay.py answer --answer "..." --answer "..."`. `relay.py init` puts that instruction in `CLAUDE.md`.
+### Settings (`relay.json`, optional)
 
-## Seeing the page
-
-For visual work, list your pages in `relay.json`, for example `"look": ["index.html"]` or `"look": ["http://localhost:3000"]`. In make and check the relay then screenshots each page at desktop and phone size after every round of work (`.relay/screenshots/`), and both reviewers judge the pictures as well as the code: Claude opens them, and Codex gets them attached. The maker can take them itself with `relay.py look` to check its work before handing over. It needs Chrome or Chromium (or `RELAY_CHROME` set to one); pages that refuse to be shown in a frame won't get a phone picture.
-
-## How it keeps context
-
-Codex and Claude each start every session with a blank memory. Neither can see the other's conversation. So the relay never relies on memory: everything that matters is written into files that both of them read first. Think of a shift change at a hospital. The next nurse doesn't remember the last shift, but the patient's chart says everything.
-
-![How the relay keeps context](docs/images/context.png)
-
-| Layer | File | What it holds | Changes |
-| --- | --- | --- | --- |
-| **Rulebook** | `AGENTS.md` (Codex reads it automatically) plus a one-line `CLAUDE.md` pointing to it | What the project is, how to test it, rules, your preferences | Rarely |
-| **Task note** | `.relay/baton.md` | What I did · What's next · Watch out for · **Decisions and why** · **Tried, didn't work** | After every step |
-| **Diary** | your progress file plus Git commit messages | Where things stand across days, and why each change was made | Every session |
-| **Your answers** | added to the task note with `relay.py pass --note "..."` | Decisions only you can make | When asked |
-
-Rules that keep it from leaking:
-
-- **Write as you go.** Assistants update the note after every meaningful step, not just at the end, so running out of usage loses at most one step.
-- **Only add, never wipe.** "Decisions and why" and "Tried, didn't work" are copied forward every time. Hand-overs and `pass` add to the existing note instead of replacing it, and if an assistant stops without writing anything, the relay keeps the old note and adds what it can see (the limit message and any half-finished files).
-- **One rulebook for both.** Put shared instructions in `AGENTS.md`. Codex reads it automatically, and a one-line `CLAUDE.md` sends Claude there, so the two never follow different rules.
-- **Keep the start-up reading short.** Every session re-reads its notes from scratch, and that reading counts toward your usage. The relay's own additions are small (about 500 tokens of instructions plus the note). The risk is your own files growing. In the project this was built in, the notes every session read first had grown to about 55,000 tokens; moving the history into an archive and keeping a one-page "where things stand" brought that down to about 1,900. Keep `AGENTS.md` and your progress file to roughly a page each, and point to longer records instead of including them.
-- **A second pair of eyes.** In make and check, the reviewer judges the work against your own files (`review_criteria`), which catches drift from what you asked.
-
-`relay.py init` sets all of this up in a new project: a starter `AGENTS.md` to fill in, the `CLAUDE.md` pointer, a progress file, `relay.json` and the `.gitignore` entry. It never overwrites a file you already have.
-
-What doesn't carry over: anything that was said but never written down. If it matters, put it in `AGENTS.md` or the note.
-
-## Avoiding groupthink
-
-When one AI reads another's notes, it tends to see the problem the same way, agree too easily and miss what the first one missed. The relay pushes back on that:
-
-- **Blind review (make and check, on by default).** Before the reviewer sees the other AI's report, the relay moves the report out of the project and the reviewer looks at the work on its own. Then it gets its blind findings back, reads the report, and has to list what only it found, what only the other found, and where they disagree, re-checking each against the code. Agreement between two AIs doesn't count as evidence. Unsaved changes the other AI made to its own write-ups (your progress file, plus anything in `blind_hide` in `relay.json`) are set aside during the blind look too, and put back afterwards. Both passes are saved in the review. `--no-blind` skips the extra look (cheaper, more anchoring).
-- **Decisions say who made them.** Each line under "Decisions and why" starts with `[user]`, `[codex]` or `[claude]`. Yours are final. An AI's can be challenged, but only with evidence, and the old line is kept and marked as replaced. Record yours with `relay.py pass --to claude --note "..." --decision "Keep the short wording"`.
-- **Checked or assumed.** Every claim in the note is marked `(checked: how)` or `(assumed)`, and the next AI must check anything assumed before relying on it. Earlier notes are leads, not facts.
-- **Two different models.** Codex and Claude come from different companies with different blind spots, and they're judged against your files and real tests, not each other's opinion.
-- **Questions instead of assumptions.** Anything only you can settle goes to you as a question, so neither assistant quietly settles it and the other doesn't inherit the guess.
-- **Changes of mind need evidence.** After the blind look, the reviewer must list every blind finding it dropped or changed after reading the report, and what new evidence changed it. Reading the report doesn't count.
-- **Swap who goes first.** Whoever starts sets the frame: use `--start claude` or `--maker codex` on some runs.
-
-## How it works
-
-![Under the hood](docs/images/architecture.png)
-
-- **One editor at a time.** Every session claims a lock in the Git directory (`.git/relay-writer-lock`). If anyone else holds it, the relay refuses to start.
-- **The hand-off note.** `.relay/baton.md` says what was done, what's next, what to watch out for, which decisions were made and why, and what was tried and didn't work. Its `Status:` line (`continue`, `done` or `ask-user`) decides whether the relay continues.
-- **The call ledger.** Every session gets a `RELAY_CALL_BUDGET` directory. Your test runner calls `reserveRelayCall()` (Node) or `reserve_relay_call()` (Python) from [`budget/`](budget/) before each live model call. Each call takes one slot with an atomic `mkdir`, so repeated and parallel runs share one cap. Outside make and check the budget is zero. In make and check the relay also checks the maker's reported `Calls used:` against the ledger and stops if they disagree.
-- **Usage-limit detection.** When a session ends, the relay looks for a usage-limit message in its last few lines only, so text the assistant read earlier can't trigger a switch.
-- **Receipts.** The terminal shows one line per step. Everything each assistant printed goes to `.relay/transcripts/`, `.relay/log.md` keeps a one-line history, and each make-and-check review is committed on its own.
-
-![What you see](docs/images/terminal.png)
-
-## Set up
-
-You need Python 3.9+, Git, and both CLIs signed in with their subscriptions: [Codex CLI](https://github.com/openai/codex) (`codex login`, ChatGPT sign-in) and [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`, claude.ai sign-in).
-
-```sh
-curl -O https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/relay.py
-python3 relay.py init          # creates AGENTS.md, CLAUDE.md, a progress file and relay.json (never overwrites),
-                               # then asks 6 quick questions about the project; run it again to change your answers
-python3 relay.py run --task "Describe the job" --dry-run
-```
-
-Optionally add `relay.json` at your repository root (see [`relay.example.json`](relay.example.json)):
+See [`relay.example.json`](relay.example.json).
 
 | Key | Meaning | Default |
 | --- | --- | --- |
 | `notes` | Files each assistant reads first | `AGENTS.md`, `CLAUDE.md`, `README.md` (those that exist) |
 | `checkpoint` | Progress file to keep up to date | none |
-| `tests` | Test commands; Claude is allowed to run exactly these | none |
+| `tests` | Test commands; Claude may run exactly these, as maker or reviewer | none |
 | `live_command` | The only command allowed to make live model calls (needed for `--calls`) | none |
 | `review_criteria` | Files the reviewer judges against | the `notes` |
+| `blind_hide` | Extra write-up files to set aside during the blind look | none |
 | `claude_model` / `codex_model` | Model for each CLI | `sonnet` / the CLI's default |
-| `look` | Pages to screenshot at desktop and phone size (files or URLs), so the assistants can see them | none |
-| `lock_name` | Name of the writer lock in the Git directory, if your project already has its own single-writer lock | `relay-writer-lock` |
-| `keep_chats` | Also save each session as a chat in the Claude and Codex apps. Off by default, because a run starts several separate sessions (they must be separate for the blind review to be blind) and the relay keeps its own record in `.relay/` | `false` |
+| `look` | Pages to screenshot at desktop and phone size | none |
+| `lock_name` | Name of the writer lock in the Git directory, to share your project's own lock | `relay-writer-lock` |
+| `keep_chats` | Also save each session as a chat in the apps (sessions are kept separate so the blind look stays blind) | `false` |
 
-Add `.relay/transcripts/` to your `.gitignore`.
+Add `.relay/transcripts/` and `.relay/screenshots/` to your `.gitignore` (`init` adds the first).
 
-## Guardrails
+### Under the hood
 
-- **Subscriptions only.** Claude runs with `ANTHROPIC_*` and provider overrides removed and must be signed in with claude.ai. Codex runs with `OPENAI_API_KEY` removed and must be signed in with ChatGPT. There is no API-key fallback.
-- **It always ends.** Nothing retries, loops forever or runs on a schedule. Backup mode uses at most one session of each assistant per run.
-- **Short reviews.** Each review opens with a plain-English summary, then at most 3 must-fix items, optional extras, and questions for you.
-- **Reviewers can't edit.** Codex reviews in its read-only sandbox. Claude reviews with read-only tools plus your `tests` commands, so both can prove a finding by running the tests.
-- **No publishing.** Assistants are told never to push, and the relay stops if one switches branch.
-- **Know the limits.** The ledger guards test runners that call it. It isn't a sandbox against deliberate changes to code or environment. Codex's workspace-write sandbox usually can't make Git commits, so it leaves changes for the next assistant and says so in the note.
+- **One editor at a time.** Every session claims a lock directory in the Git directory; if anyone else holds it, the relay refuses to start.
+- **Call ledger.** Every session gets a `RELAY_CALL_BUDGET` directory. Your test runner calls `reserveRelayCall()` (Node) or `reserve_relay_call()` (Python) from [`budget/`](budget/) before each live model call; each call takes a slot with an atomic `mkdir`, so parallel runs share one cap. Outside make and check the limit is zero. The maker's reported `Calls used:` must match the ledger.
+- **Usage-limit detection** reads only the last lines of a session, so a file that mentions limits can't trigger a switch.
+- **Subscriptions only.** Claude runs with `ANTHROPIC_*` and provider overrides removed and must be signed in with claude.ai; Codex runs with `OPENAI_API_KEY` removed and must be signed in with ChatGPT.
+- **Always ends.** No retries, schedules or endless loops; round, turn and question-stop limits.
+- **Receipts.** One line per step in the terminal; full output in `.relay/transcripts/`; a one-line history in `.relay/log.md`; each review committed on its own.
+- **Know the limits.** The ledger guards test runners that call it; it isn't a sandbox against deliberate changes. Codex's sandbox usually can't make Git commits, so it leaves changes for the next assistant and says so in the note.
 
-## Results so far
-
-![Real results](docs/images/scores.png)
-
-**Groupthink test.** On a small pricing project with a written spec, a scripted first assistant handed over work with planted mistakes and a confident, partly false report: mistakes marked "checked", a wrong "decision", a "not in scope", and a made-up worry. Codex and Claude each reviewed it, blind and not blind (8 reviews in all). Every review caught every planted mistake, none approved, none repeated the made-up worry, and the blind look added findings. In a fully real run Codex found two weak tests Claude had missed, and withdrew one of its own claims when the code proved it wrong. Small sample, and a written spec makes mistakes easy to prove: expect more anchoring on judgement calls with no written standard, which is where blind review matters most.
-
-A second test had almost no rules ("Make the sign-up page better", no spec, no tests) and a persuasive report: "in good shape", a pre-ticked marketing box defended as common practice, a removed log-in link called best practice, and a made-up top priority. Across 8 reviews none approved and none adopted the made-up priority. Blind reviews caught 19 of 20 planted problems; reviews that read the report first caught 17 of 20, and one of those only covered what the report had raised. Blind reviews also found more real problems nobody had planted. That is the anchoring the blind look is there to stop: the report sets the reviewer's agenda. Small samples (two runs per set-up), so treat these as signs, not proof.
-
-A third test had no rules at all beyond the owner's answers to `relay.py init` ("Make the home page feel calmer", taste: minimal, water-like, glass, clean fonts). The new questions worked live: the maker asked before guessing about claims it couldn't verify, and refused to invent trial terms. Then the same finished work was reviewed six times. Every blind review (5 of 5) kept its findings ("Changed my mind: None") and left taste calls to the owner as questions (3 each). Both reviews that read the report first raised no questions at all, and Claude's approved the page. The report had already said "Questions for you: None", and the reviewer took that on. Small sample, but it's the clearest sign yet that the blind look matters most when there are no rules. Every reviewer's top request was to see the page on a phone, which none of them could do; that's why `look` exists. With it, a reviewer spotted a menu link wrapping onto its own line on a phone, which no code-only review had caught.
-
-Built while improving a customer-service AI prototype. Make and check was run live twice: once on one test case (2 of 2 calls), then on two hard test cases three times each (12 of 12 calls). All seven results scored 100, and Codex re-checked every score itself before approving. Take turns was also run live. Backup mode is covered by the end-to-end tests. Codex's real limit message ("You've hit your usage limit… try again at 2:43 PM") has now been seen and recognised, during a review, where the relay stops rather than switching; a full backup hand-over hasn't happened live yet. If you see one, the exact limit message in `.relay/transcripts/` is the useful thing to report.
-
-## Tests
+### Tests
 
 ```sh
 python3 -m unittest discover tests
 ```
 
-The tests run the real relay end to end in a throwaway Git repository against stand-in `codex` and `claude` programs ([`tests/fake_agent.py`](tests/fake_agent.py)), with no model calls.
-
-![What you can use it for](docs/images/uses.png)
+45 end-to-end tests run the real relay in a throwaway Git repository against stand-in `codex` and `claude` programs ([`tests/fake_agent.py`](tests/fake_agent.py)), with no model calls. The README images are made from [`docs/images/source/cards.html`](docs/images/source/cards.html).
 
 ## License
 
