@@ -313,7 +313,8 @@ class Relay(unittest.TestCase):
         self.assertIn('tip', self.output)
         self.assertEqual(json.loads((self.work/'relay.json').read_text())['checkpoint'], 'docs/progress.md')
         self.assertIn('.relay/transcripts/', (self.work/'.gitignore').read_text())
-        self.assertIn('tip     run relay.py init in a terminal to answer 6 quick questions', self.output)
+        self.assertIn('1. What is this project, and who is it for?', self.output)  # listed for whoever runs it to ask
+        self.assertIn('init --answer "..."', self.output)
         (self.work/'AGENTS.md').write_text('mine\n'); self.relay([], 'init')
         self.assertEqual((self.work/'AGENTS.md').read_text(), 'mine\n')
         self.assertEqual((self.work/'.gitignore').read_text().count('.relay/transcripts/'), 1)
@@ -324,7 +325,7 @@ class Relay(unittest.TestCase):
         self.assertTrue(agents.startswith('# Notes for AI assistants\n\n<!-- relay:about'))
         self.assertIn('- What it is and who it is for: A calm site for me and others', agents)
         self.assertIn('- Must never change or break: not said yet (ask the owner if it matters)', agents)
-        self.assertIn('relay.py answer --answer', (self.work/'CLAUDE.md').read_text())  # how Claude desktop passes your answers back
+        self.assertIn('relay.py answer --answer', agents)  # how Claude or Codex passes your answers back
         self.relay([], 'init', '--answer', 'A calmer site')
         agents = (self.work/'AGENTS.md').read_text()
         self.assertEqual(agents.count('relay:about ('), 1)
@@ -351,6 +352,81 @@ class Relay(unittest.TestCase):
         self.assertIn('First note', note)
         self.assertIn('Sam says: use the short version', note)
         self.assertIn('To: claude', note)
+
+
+class Install(unittest.TestCase):
+    """install.sh in a throwaway home folder, from the local relay.py, with no keyboard."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = self.tmp/'home'; self.home.mkdir()
+        self.env = {'HOME': str(self.home), 'SHELL': '/bin/zsh', 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin:' + str(Path(sys.executable).parent),
+                    'RELAY_SOURCE': str(REPO/'relay.py'), 'RELAY_TEACH': 'no'}
+        self.relay_cmd = self.home/'.local/bin/relay'
+
+    def install(self, **env):
+        return subprocess.run(['sh', str(REPO/'install.sh')], env={**self.env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    def relay(self, *args, cwd=None):
+        return subprocess.run([str(self.relay_cmd), *args], cwd=cwd or self.tmp, env=self.env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    def project(self):
+        work = self.tmp/'project'; work.mkdir()
+        subprocess.run(['git', 'init', '-q'], cwd=work, check=True)
+        return work
+
+    def test_install_gives_a_relay_command_that_works_in_any_project(self):
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Installed the relay: codex-claude-relay', result.stdout)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', (self.home/'.zshrc').read_text())  # the Terminal will find it
+        self.assertIn('relay teach', result.stdout)  # no keyboard: it says how to teach the apps instead of asking
+        work = self.project()
+        setup = self.relay('init', '--answer', 'A calm site', cwd=work)
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        agents = (work/'AGENTS.md').read_text()
+        self.assertIn('A calm site', agents)
+        self.assertIn('relay answer --answer', agents)  # installed: messages say `relay`, not `python3 relay.py`
+
+    def test_installing_twice_is_harmless(self):
+        self.install(); self.install()
+        self.assertEqual((self.home/'.zshrc').read_text().count('codex-claude-relay'), 1)
+        self.assertEqual(self.relay('version').returncode, 0)
+
+    def test_a_broken_download_changes_nothing(self):
+        self.install()
+        before = (self.home/'.relay/relay.py').read_text()
+        bad = self.tmp/'bad.py'; bad.write_text('<html>Not found</html')
+        self.assertNotEqual(self.install(RELAY_SOURCE=str(bad)).returncode, 0)
+        self.assertEqual((self.home/'.relay/relay.py').read_text(), before)
+
+    def test_outside_a_project_it_says_how_to_start_one(self):
+        self.install()
+        result = self.relay('init')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('git init', result.stderr)
+
+    def test_teach_adds_one_removable_note_and_keeps_your_own_instructions(self):
+        (self.home/'.claude').mkdir(); (self.home/'.claude/CLAUDE.md').write_text('My own rules.\n')
+        self.install(RELAY_TEACH='yes'); self.relay('teach')
+        claude, codex = (self.home/'.claude/CLAUDE.md').read_text(), (self.home/'.codex/AGENTS.md').read_text()
+        self.assertTrue(claude.startswith('My own rules.'))
+        self.assertEqual(claude.count('<!-- codex-claude-relay -->'), 1)
+        self.assertIn('Set up the relay for this project', codex)
+        self.assertIn(str(self.relay_cmd), codex)
+        self.relay('teach', '--remove')
+        self.assertEqual((self.home/'.claude/CLAUDE.md').read_text(), 'My own rules.\n')
+
+    def test_uninstall_removes_only_what_it_added(self):
+        (self.home/'.zshrc').write_text('alias ll="ls -l"\n')
+        self.install(RELAY_TEACH='yes')
+        work = self.project(); self.relay('init', cwd=work)
+        result = self.relay('uninstall', '--yes')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.relay_cmd.exists())
+        self.assertFalse((self.home/'.relay').exists())
+        self.assertEqual((self.home/'.zshrc').read_text(), 'alias ll="ls -l"\n')
+        self.assertNotIn('codex-claude-relay', (self.home/'.codex/AGENTS.md').read_text())
+        self.assertTrue((work/'AGENTS.md').exists())  # your projects are left alone
 
 
 class Budget(unittest.TestCase):

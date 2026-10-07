@@ -63,6 +63,7 @@
   .gs .box { background: var(--card); border-radius: 28px; padding: 36px; display: flex; flex-direction: column; gap: 18px; min-height: 380px; box-shadow: 0 2px 0 var(--line); }
   .gs h2 { font-size: 36px; line-height: 1.15; }
   .gs p { font-size: 25px; line-height: 1.4; color: var(--muted); font-weight: 500; }
+  .gs .say { color: var(--you); font-weight: 600; background: var(--you-soft); border-radius: 14px; padding: 12px 16px; }
   .gs code { font-family: Menlo, monospace; font-size: 20px; background: var(--bg); padding: 4px 8px; border-radius: 8px; color: var(--ink); }
 </style>
 </head>
@@ -161,15 +162,15 @@
 <!-- 7: get started -->
 <section class="slide" id="start">
   <h1>Getting started</h1>
-  <p class="sub">You need both apps, signed in with your normal plans. No paid API keys.</p>
+  <p class="sub">No setup files, no paid API keys. Just ask.</p>
   <div class="stage">
     <div class="gs">
-      <div class="box"><span class="num">1</span><h2>Install both helpers</h2><p>Codex (sign in with ChatGPT) and Claude Code (sign in with Claude).</p></div>
-      <div class="box"><span class="num">2</span><h2>Answer 6 quick questions</h2><p>Download one file, then run <code>relay.py init</code>. It asks what the project is and what "good" looks like to you.</p></div>
-      <div class="box"><span class="num">3</span><h2>Give it a job</h2><p><code>relay.py run --task "…"</code><br>Or just ask Claude to run it for you.</p></div>
+      <div class="box"><span class="num">1</span><h2>Have Claude and Codex</h2><p>Both installed and signed in with your normal plans, since they take turns.</p></div>
+      <div class="box"><span class="num">2</span><h2>Ask it to install the relay</h2><p class="say">"Install the relay from github.com/ruthannbravo/codex-claude-relay and set it up for this project."</p><p>It asks you 6 quick questions about the project.</p></div>
+      <div class="box"><span class="num">3</span><h2>Give it a job</h2><p class="say">"Use the relay to make the home page calmer."</p><p>Any questions come straight to you.</p></div>
     </div>
   </div>
-  <p class="foot">Codex ⇄ Claude relay</p>
+  <p class="foot">Codex ⇄ Claude relay · or paste one line into Terminal: see the README</p>
 </section>
 
 <script>

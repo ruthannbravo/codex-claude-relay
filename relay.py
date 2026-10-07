@@ -10,10 +10,15 @@ Run it from inside any Git repository:
                                                 Codex reviews read-only each round until it approves
   relay.py run --task "..." --take-turns 4      take turns: alternate one step each, at most 4 turns
   relay.py run ... --dry-run                    print what each assistant would be told; no model call
+Installed with install.sh, the same commands are just `relay init`, `relay run ...` and so on, in any project.
+
   relay.py init                                 create AGENTS.md, CLAUDE.md, relay.json and a progress file, then
                                                 ask you 6 quick questions about the project (Enter skips one)
   relay.py answer                               answer the questions the assistants left for you, then carry on
   relay.py look                                 screenshot the pages in relay.json "look" at desktop and phone size
+  relay.py teach [--remove]                     add (or remove) a short note about the relay to Claude's and Codex's
+                                                general instructions, so "set up the relay" works in any project
+  relay.py uninstall                            remove what install.sh added
   relay.py status                               who holds the lock, and the current baton
   relay.py pass --to codex --task "..." --note "..."   hand off by hand at the end of an interactive chat
 
@@ -33,11 +38,16 @@ login required.
 import argparse, datetime, html, json, os, re, shutil, subprocess, sys, tempfile, uuid
 from pathlib import Path
 
-def git_root():
-    try: return Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip())
-    except (subprocess.CalledProcessError, FileNotFoundError): raise SystemExit('Run the relay from inside a Git repository')
+VERSION = '2026.10.07'
 
-ROOT = git_root()
+def git_root():
+    try: return Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True, stderr=subprocess.DEVNULL).strip())
+    except (subprocess.CalledProcessError, FileNotFoundError): return None
+
+IN_REPO = git_root() is not None
+ROOT = git_root() or Path.cwd()
+# How to type the relay in messages: `relay` when installed with install.sh (its launcher sets RELAY_COMMAND).
+RELAY_CMD = os.environ.get('RELAY_COMMAND') or 'python3 relay.py'
 STATE = ROOT/'.relay'
 BATON = STATE/'baton.md'
 LOG = STATE/'log.md'
@@ -74,6 +84,10 @@ def unique(): return f'{datetime.datetime.now():%Y-%m-%d-%H%M%S}-{uuid.uuid4().h
 def other(agent): return AGENTS[1 - AGENTS.index(agent)]
 def git(*args): return subprocess.check_output(['git', *args], cwd=ROOT, text=True).strip()
 def rel(path): return os.path.relpath(path, ROOT)
+
+def head():
+    try: return git('rev-parse', '--short', 'HEAD')
+    except subprocess.CalledProcessError: return 'no commits yet'
 
 def lock_path():
     return (ROOT/git('rev-parse', '--git-common-dir')).resolve()/CONFIG['lock_name']
@@ -467,7 +481,7 @@ def ask_user(questions, asked_by, resume):
             return True
         except EOFError: print()
     for n, q in enumerate(questions, 1): show_question(n, q, mixed); print()
-    print('Answer them with: python3 relay.py answer   (it asks them one by one, then carries on)')
+    print(f'Answer them with: {RELAY_CMD} answer   (it asks them one by one, then carries on)')
     return False
 
 def save_answers(questions, answers):
@@ -514,7 +528,7 @@ def pause(questions, asked_by, resume, pauses):
     """Returns None to carry on, or the exit code to stop with."""
     if pauses > MAX_PAUSES: return stop(f'{MAX_PAUSES} question stops in one run; read {rel(BATON)} and run again', ok=False)
     if ask_user(questions, asked_by, resume): return None
-    return stop('waiting for your answers: run python3 relay.py answer')
+    return stop(f'waiting for your answers: run {RELAY_CMD} answer')
 
 # ---- mode 1: backup --------------------------------------------------------------------------------------------
 def run_backup(task, start, dry_run):
@@ -549,7 +563,7 @@ def run_backup(task, start, dry_run):
         print('finished', flush=True)
         baton = read_baton()
         if not baton or baton['text'] == before: return stop(f'{agent} finished without updating the baton; see {rel(transcript)}', ok=False)
-        log(f'{agent} → {baton["status"]} (HEAD {git("rev-parse", "--short", "HEAD")})')
+        log(f'{agent} → {baton["status"]} (HEAD {head()})')
         questions = questions_in(baton, agent)
         if questions:
             pauses += 1
@@ -646,7 +660,7 @@ def run_check(task, rounds, budget, maker, dry_run, blind=True, first=1):
             measured = budget_used(ledger)
             if int(reported[1]) != measured - used: return stop(f'round {rnd}: reported calls ({reported[1]}) disagree with the ledger ({measured - used})', ok=False)
             used = measured
-            log(f'round {rnd}: {maker} made (calls {reported[1]}, total {used} of {budget}; HEAD {git("rev-parse", "--short", "HEAD")})')
+            log(f'round {rnd}: {maker} made (calls {reported[1]}, total {used} of {budget}; HEAD {head()})')
             questions = questions_in(baton, maker)
             if baton['status'] != 'ask-user':  # not blocking: ask them together with the reviewer's, after the review
                 waiting = questions; break
@@ -730,7 +744,7 @@ def run_turns(task, turns, start, dry_run, first=1):
         if not baton or baton['text'] == before: return stop(f'turn {turn}: {agent} finished without writing a baton', ok=False)
         if baton['status'] not in STATUSES: return stop(f'turn {turn}: baton status "{baton["status"]}" not understood', ok=False)
         if git('branch', '--show-current') != branch: return stop(f'turn {turn}: {agent} changed branch', ok=False)
-        log(f'turn {turn}: {agent} → {baton["status"]} (HEAD {git("rev-parse", "--short", "HEAD")})')
+        log(f'turn {turn}: {agent} → {baton["status"]} (HEAD {head()})')
         questions = questions_in(baton, agent)
         if questions:
             pauses += 1
@@ -758,13 +772,16 @@ Both assistants start every session with no memory of earlier ones: what is writ
 
 ## Where things stand
 See {checkpoint} for current progress, and .relay/baton.md for the task in hand.
+
+## Running the relay for the user
+If the user asks you to run the relay and it stops with questions for them, read .relay/questions.json and ask each
+question (the suggested answer first, with its reason; use your question tool if you have one). Then pass the answers,
+in order: {cmd} answer --answer "..." --answer "..." ("suggested" and "skip" work too). A run can take a while: run it
+in the background if you can.
 '''
 
-CLAUDE_TEMPLATE = '''Read AGENTS.md first: it holds this project's notes for AI assistants, shared with Codex.
-
-If you run relay.py for the user and it stops with questions for them, read .relay/questions.json and put each
-question to the user with your question tool: the suggested answer first, marked as recommended, with its reason.
-Then pass their answers, in order, with: python3 relay.py answer --answer "..." --answer "..." ("suggested" or "skip" work too).
+CLAUDE_TEMPLATE = '''Read AGENTS.md first: it holds this project's notes for AI assistants, shared with Codex, including how to
+put the relay's questions to the user (with your question tool, the suggested answer marked as recommended).
 '''
 SETUP = [('What is this project, and who is it for?', 'What it is and who it is for'),
          ('How do you check it works? (a command, or "I look at it on my phone")', 'How the owner checks work'),
@@ -772,7 +789,7 @@ SETUP = [('What is this project, and who is it for?', 'What it is and who it is 
          ('What does "good" look like to you? Words, examples you like, things you dislike.', 'What good looks like'),
          ('Which decisions must always come to you? (wording, colours, anything public or that costs money)', 'Decisions that always go to the owner'),
          ('Anything the AIs should never do?', 'Never do')]
-ABOUT = ('<!-- relay:about (your answers to relay.py init; run it again to change them) -->', '<!-- /relay:about -->')
+ABOUT = ('<!-- relay:about (your answers to relay.py init; run it again to change them) -->', '<!-- /relay:about -->')  # kept as is: projects already have it
 
 def about_you(given):
     """Ask the six setup questions (or take them from --answer) and keep the answers at the top of AGENTS.md."""
@@ -781,8 +798,11 @@ def about_you(given):
         print('\nA few quick questions, so both assistants know what you want. Press Enter to skip any.\n')
         try: answers = [input(f'{n}. {q}\n   ') for n, (q, _) in enumerate(SETUP, 1)]
         except EOFError: return
-    else:
-        print('tip     run relay.py init in a terminal to answer 6 quick questions about the project'); return
+    else:  # no keyboard: list the questions, so whoever runs this (often Claude or Codex) can ask the user
+        print('\nSet-up questions for the owner of this project. Ask them, then pass the answers in order with:')
+        print(f'  {RELAY_CMD} init --answer "..." --answer "..."   (one per question; "" skips one)\n')
+        for n, (q, _) in enumerate(SETUP, 1): print(f'{n}. {q}')
+        return
     lines = [f'- {label}: {a.strip() or "not said yet (ask the owner if it matters)"}' for (_, label), a in zip(SETUP, answers)]
     block = f'{ABOUT[0]}\n## About this project and its owner\n' + '\n'.join(lines) + \
             "\nThese are the owner's own answers: treat them as [user] decisions.\n" + ABOUT[1]
@@ -792,7 +812,7 @@ def about_you(given):
     elif text.startswith('# '): title, _, rest = text.partition('\n'); text = f'{title}\n\n{block}\n{rest}'
     else: text = f'{block}\n\n{text}'
     path.write_text(text)
-    print('\nsaved   your answers at the top of AGENTS.md (run relay.py init again to change them)')
+    print(f'\nsaved   your answers at the top of AGENTS.md (run {RELAY_CMD} init again to change them)')
 
 def init(given=()):
     """Create the files that carry context between assistants, then ask about the project. Never overwrites a file."""
@@ -801,7 +821,7 @@ def init(given=()):
         path = ROOT/name
         if path.exists(): kept.append(name); return
         path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text); made.append(name)
-    create('AGENTS.md', AGENTS_TEMPLATE.format(checkpoint='docs/progress.md'))
+    create('AGENTS.md', AGENTS_TEMPLATE.format(checkpoint='docs/progress.md', cmd=RELAY_CMD))
     create('CLAUDE.md', CLAUDE_TEMPLATE)
     create('docs/progress.md', f'# Progress\n\n{datetime.date.today()}: set up the Codex ⇄ Claude relay.\n')
     create('relay.json', json.dumps({**DEFAULTS, 'notes': ['AGENTS.md'], 'checkpoint': 'docs/progress.md'}, indent=2) + '\n')
@@ -814,7 +834,67 @@ def init(given=()):
     for name in kept: print('kept   ', name, '(already there)')
     if 'AGENTS.md' not in claude: print('tip     add a line to CLAUDE.md telling Claude to read AGENTS.md, so both assistants share one set of notes')
     about_you(list(given))
-    print('Next: add your test commands to AGENTS.md if you have any, then try: relay.py run --task "..." --dry-run')
+    print(f'Next: give it a job, e.g. {RELAY_CMD} run --task "Make the home page feel calmer"')
+    return 0
+
+# ---- installing ---------------------------------------------------------------------------------------------------
+TEACH_MARK = ('<!-- codex-claude-relay -->', '<!-- /codex-claude-relay -->')
+
+def installed():
+    path = RELAY_SCRIPT.parent/'installed.json'
+    return json.loads(path.read_text()) if path.exists() else {}
+
+def global_notes():
+    """Claude's and Codex's own instruction files, read in every project."""
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home()/'.claude')/'CLAUDE.md'
+    codex = Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')/'AGENTS.md'
+    return [claude, codex]
+
+def teach_note():
+    command = installed().get('command') or 'relay'
+    return f'''{TEACH_MARK[0]}
+## Codex ⇄ Claude relay
+The `relay` command is installed ({command}). It lets Codex and Claude share a coding task through a hand-off note
+(github.com/ruthannbravo/codex-claude-relay). It uses the user's Claude and ChatGPT plans: never set up API keys for it.
+- "Set up the relay for this project": in the project folder run `relay init`. It lists 6 set-up questions: ask the
+  user each one (with your question tool if you have one), then run `relay init --answer "..."` once per question, in
+  order ("" skips one). If the folder isn't a Git repository yet, run `git init` there first.
+- "Use the relay to ...": run `relay run --task "..."` (add `--check 2` so one makes and the other checks). It can take
+  a while, so run it in the background if you can. If it stops with questions for the user, read .relay/questions.json,
+  ask each (the suggested answer first, with its reason), then run `relay answer --answer "..."` once per question.
+- It runs both apps, so a sandbox without network access will block it: ask the user to approve running it outside.
+- `relay status` shows where things stand.
+{TEACH_MARK[1]}'''
+
+def teach(remove=False):
+    for path in global_notes():
+        text = path.read_text() if path.exists() else ''
+        cleaned = re.sub(r'\n*' + re.escape(TEACH_MARK[0]) + '.*?' + re.escape(TEACH_MARK[1]) + r'\n?', '\n', text, flags=re.S).strip('\n')
+        if remove:
+            if cleaned != text.strip('\n'): path.write_text(cleaned + '\n' if cleaned else ''); print('removed the relay note from', path)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text((cleaned + '\n\n' if cleaned else '') + teach_note() + '\n')
+        print('added   a note about the relay to', path)
+    if not remove: print('Claude and Codex now know about the relay in every project. Undo with: relay teach --remove')
+    return 0
+
+def uninstall(yes=False):
+    info = installed()
+    if not info: raise SystemExit('Nothing to uninstall: the relay was not installed with install.sh (just delete relay.py).')
+    if not yes:
+        if not sys.stdin.isatty(): raise SystemExit('To remove the relay command and its notes, run: relay uninstall --yes')
+        if input('Remove the relay command and its notes in Claude and Codex? Your projects are not touched. [y/N] ').strip().lower() != 'y': return 1
+    teach(remove=True)
+    command = Path(info.get('command', ''))
+    if command.is_file() and 'codex-claude-relay' in command.read_text(): command.unlink(); print('removed', command)
+    for profile in info.get('profiles', []):
+        path = Path(profile)
+        if path.exists():
+            kept = [line for line in path.read_text().splitlines() if '# added by codex-claude-relay' not in line]
+            path.write_text('\n'.join(kept).rstrip('\n') + '\n'); print('removed the PATH line from', path)
+    shutil.rmtree(RELAY_SCRIPT.parent); print('removed', RELAY_SCRIPT.parent)
+    print('The relay is uninstalled. Files it made inside your projects (AGENTS.md, .relay/ and so on) are left alone.')
     return 0
 
 # ---- command line ----------------------------------------------------------------------------------------------
@@ -835,7 +915,21 @@ def main(argv=None):
     r.add_argument('--dry-run', action='store_true')
     r.add_argument('--from-round', type=int, default=1, help=argparse.SUPPRESS)  # set when a run carries on after your answers
     sub.add_parser('look')
+    t = sub.add_parser('teach'); t.add_argument('--remove', action='store_true')
+    u = sub.add_parser('uninstall'); u.add_argument('--yes', action='store_true')
+    sub.add_parser('version')
     a = ap.parse_args(argv)
+    if a.action == 'version': print('codex-claude-relay', VERSION); return 0
+    if a.action == 'teach': return teach(a.remove)
+    if a.action == 'uninstall': return uninstall(a.yes)
+    if not IN_REPO:
+        here = Path.cwd()
+        if a.action == 'init' and here != Path.home() and sys.stdin.isatty() and \
+                input(f'{here} is not a Git project yet, which the relay needs. Make it one now? [Y/n] ').strip().lower() in ('', 'y', 'yes'):
+            subprocess.run(['git', 'init', '-q'], check=True); print('created a Git project in', here)
+        else:
+            raise SystemExit(f'{here} is not a Git project, which the relay needs. Open your project folder, or make this one a '
+                             'project with: git init')
     if a.action == 'init': return init(a.answer)
     if a.action == 'answer': return answer(a.answer)
     if a.action == 'look': return 0 if look() or not CONFIG['look'] else 1

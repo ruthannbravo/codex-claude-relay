@@ -26,21 +26,37 @@ Let two AI coding helpers, **Codex** (by OpenAI) and **Claude** (by Anthropic), 
 
 ![Do they just agree with each other? We tested it.](docs/images/6-tested.png)
 
-## Getting started
+## Install
+
+**Easiest: ask your AI.** In Claude or Codex, say:
+
+> Install the relay from github.com/ruthannbravo/codex-claude-relay and set it up for this project.
+
+It installs the relay, then asks you 6 quick questions about your project.
+
+**Or paste this one line into Terminal:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/install.sh | sh
+```
+
+Either way you need [Codex](https://github.com/openai/codex) and [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and signed in with your normal plans. Install the relay once and it works in every project.
 
 ![Getting started](docs/images/7-start.png)
 
-1. **Install both helpers** and sign in with your normal plans: [Codex](https://github.com/openai/codex) (with ChatGPT) and [Claude Code](https://docs.claude.com/en/docs/claude-code) (with Claude). You also need Python 3.9 or newer and Git, which most Macs already have.
-2. **Download the relay into your project and answer 6 quick questions** about what the project is and what "good" looks like to you:
-   ```sh
-   curl -O https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/relay.py
-   python3 relay.py init
-   ```
-3. **Give it a job:**
-   ```sh
-   python3 relay.py run --task "Make the home page feel calmer"
-   ```
-   Or skip the terminal and ask Claude (in the Claude app or Claude Code) to run the relay for you. It will show you any questions as clickable choices.
+## Using it
+
+| What you want | Say to Claude or Codex | Or type in Terminal |
+| --- | --- | --- |
+| Set up a project (once per project: 6 quick questions) | "Set up the relay for this project." | `relay init` |
+| Give it a job | "Use the relay to make the home page calmer." | `relay run --task "Make the home page calmer"` |
+| One does the work, the other checks it | "Use the relay with checking to make the home page calmer." | `relay run --task "..." --check 2` |
+| See where things stand | "What's the relay up to?" | `relay status` |
+| Answer its questions later | The AI asks you directly | `relay answer` |
+| Update to the latest version | "Update the relay." | run the install line again |
+| Remove it | "Uninstall the relay." | `relay uninstall` |
+
+**Claude** shows the relay's questions as clickable choices. **Codex** lists them in the chat and you type your answers. Codex may ask your permission the first time it runs the relay, because the relay starts both apps and Codex's safety settings usually block that.
 
 ## Common questions
 
@@ -48,9 +64,21 @@ Let two AI coding helpers, **Codex** (by OpenAI) and **Claude** (by Anthropic), 
 
 **Is my project safe?** Only one helper can change files at a time. The checker can't edit anything. The helpers are told never to publish or upload your work: that stays your decision.
 
-**Do I need to be a programmer?** You need to be comfortable typing two or three commands, or you can ask Claude to run it for you. Everything the helpers ask you is in plain English.
+**Do I need to be a programmer?** No. You can ask Claude or Codex to install it, set it up and run it for you. Everything the helpers ask you is in plain English.
+
+**How do I use it on another project?** Open that project and say "Set up the relay for this project" (or type `relay init`). It asks the 6 questions again for that project, because each project has its own goals and taste. You only install once.
 
 **What does it not do?** It doesn't run on a schedule or loop forever: every run ends, and it tells you why. And it only knows what's written down, so anything that matters should be in your answers or the project notes.
+
+## Instructions for AI assistants
+
+If a user asks you to install or use this relay, follow these steps.
+
+1. **Check what's needed.** `codex --version` and `claude --version` must work, signed in with subscriptions (`codex login status` mentions ChatGPT; `claude auth status` shows claude.ai). If either is missing, tell the user how to install or sign in. Never set up API keys for the relay.
+2. **Install:** `curl -fsSL https://raw.githubusercontent.com/ruthannbravo/codex-claude-relay/main/install.sh | RELAY_TEACH=no sh`. It needs network access; if your sandbox blocks it, ask the user to approve running it. It prints where the `relay` command is; use that full path if `relay` isn't found in your shell yet.
+3. **Ask the user** whether to add a short note about the relay to Claude's and Codex's general instructions, so "set up the relay" works in any project. If yes, run `relay teach`.
+4. **Set up the project.** In the project folder, run `relay init` (if the folder isn't a Git repository, ask the user, then run `git init` first). Without a keyboard it lists 6 questions: ask the user each one (with your question tool if you have one; they may skip any), then run `relay init --answer "..."` once per question, in order (`""` for a skipped one).
+5. **Running jobs.** `relay run --task "..."`, or with `--check 2` so one makes and the other checks. Runs can take a while, so run them in the background if you can. If it stops with questions for the user, read `.relay/questions.json`, ask each (the suggested answer first, with its reason), then run `relay answer --answer "..."` once per question, in order (`suggested` and `skip` work too). The run carries on by itself.
 
 ---
 
@@ -66,7 +94,9 @@ A single Python file with no dependencies. It runs the `codex` and `claude` CLIs
 | **Make and check** | `relay.py run --task "..." --check 3 --calls 8` | Each round the maker (Claude, or `--maker codex`) does the work and may make live test calls within the budget. The checker reviews read-only, blind first, and ends with approve, revise or ask-user. | Approved · waiting for your answers · round limit (1–5) · call budget exceeded or misreported · any error |
 | **Take turns** | `relay.py run --task "..." --take-turns 4` | They alternate, one focused step each. | Done · waiting for your answers · turn limit (1–8) · any error |
 
-Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
+Other commands: `init` (set up a project and ask the 6 questions; run it again to change your answers; without a keyboard it lists them and takes `--answer` once per question), `answer` (answer waiting questions, then carry on), `look` (screenshot your pages), `status` (who holds the lock, and the current note), `pass --to codex --task "..." --note "..." [--decision "..."]` (hand off by hand at the end of a normal chat). `teach [--remove]` (add or remove the relay note in Claude's and Codex's general instructions), `uninstall`, `version`. Add `--dry-run` to any `run` to print exactly what each assistant would be told, with no model calls.
+
+Without installing, the same file also runs as `python3 relay.py ...` from inside a project; `install.sh` just keeps one copy in `~/.relay` and adds a `relay` command (in `~/.local/bin`, added to your shell's PATH if needed).
 
 ### How context is kept
 
@@ -130,7 +160,7 @@ Add `.relay/transcripts/` and `.relay/screenshots/` to your `.gitignore` (`init`
 python3 -m unittest discover tests
 ```
 
-45 end-to-end tests run the real relay in a throwaway Git repository against stand-in `codex` and `claude` programs ([`tests/fake_agent.py`](tests/fake_agent.py)), with no model calls. The README images are made from [`docs/images/source/cards.html`](docs/images/source/cards.html).
+51 end-to-end tests (including the installer, in a throwaway home folder) run the real relay in a throwaway Git repository against stand-in `codex` and `claude` programs ([`tests/fake_agent.py`](tests/fake_agent.py)), with no model calls. The README images are made from [`docs/images/source/cards.html`](docs/images/source/cards.html).
 
 ## License
 
